@@ -1,114 +1,79 @@
 # TODO
 
-This extension exposes DuckDB scalar (and eventually table) functions whose
-semantics are exact-equivalent to the matching Trino built-ins, so that
-predicate pushdown from Trino to DuckDB through the
+This extension exposes DuckDB scalar functions (and one table macro,
+`trino_meta()`) whose semantics are exact-equivalent to the matching Trino
+built-ins, so that predicate pushdown from Trino to DuckDB through the
 [ducklake-integrations](https://github.com/brikk/ducklake-integrations)
 connector is lossless on non-ASCII / corner-case input where DuckDB's own
 built-ins diverge.
 
-Three top-level work items, in rough dependency order.
+## Done
 
-## 1. Move SQL macro aliases into the C++ extension
+- ✅ Native ICU-backed `trino_lower` / `trino_upper` / `trino_reverse`
+  (root-locale full case folding, code-point reverse).
+- ✅ `~86` `trino_<name>` macros registered as native `DefaultMacro[]` via
+  `DefaultFunctionGenerator::CreateInternalMacroInfo` — no SQL parse loop
+  at load time (matches `json` extension and Query-farm's `clickhouse-sql`).
+- ✅ `trino_meta()` table macro as `DefaultTableMacro[]` — authoritative
+  pushable-set catalog the connector mirrors in
+  `DuckDbExpressionTranslator.PUSHABLE_FUNCTIONS`.
+- ✅ ICU best-effort INSTALL/LOAD on extension load so `trino_with_timezone`
+  resolves DuckDB's `timezone()`.
+- ✅ Linux build container (`make linux-arm64`, `make linux-amd64`) for
+  cross-platform binaries when developing on macOS.
 
-Today the Trino connector ships
-`jvm/trino-ducklake/src/main/resources/dev/brikk/ducklake/trino/plugin/trino-function-aliases.sql`
-which is a long series of `CREATE OR REPLACE MACRO trino_<name>(...) AS ...;`
-statements re-executed on every attach by `TrinoFunctionAliases.java`, plus a
-`trino_meta()` SQL table macro that's the source-of-truth for the Java-side
-`DuckDbExpressionTranslator.PUSHABLE_FUNCTIONS` set (parity enforced by
-`TestTrinoFunctionAliases#testJavaPushableSetMatchesDuckDbMeta`).
+## Open
 
-Rewrite as native registrations here:
+### 1. CI build matrix for releases
 
-- Each `trino_<name>` macro → a `ScalarFunction` registered in `LoadInternal`.
-  Most are one-line bodies that wrap an existing DuckDB function — those can
-  stay as macro-ish wrappers via `MacroFunction` registration, or be inlined
-  as a direct `ScalarFunction` calling into the existing DuckDB scalar.
-- `trino_meta()` → a `TableFunction` returning the same `(name, arity, category)`
-  shape. Consumed by Java parity tests.
-- The connector's attach path changes from "run alias SQL" to
-  `INSTALL trino_parity; LOAD trino_parity;` (best-effort, mirroring the
-  current ICU pattern in `TrinoFunctionAliases.applyIcuLoad`).
+The upstream extension template ships `MainDistributionPipeline.yml` which
+calls `extension-ci-tools`' `_extension_distribution.yml` reusable workflow.
+That builds and signs binaries for every standard DuckDB platform
+(linux-amd64, linux-arm64, osx-arm64, osx-amd64, windows-amd64) and uploads
+them as workflow artifacts.
 
-Wins: no SQL parse cost on every attach, one shipped artifact instead of
-in-tree SQL + classpath resource, easier to add functions that need C++
-(item 2 below).
+Local-dev story works today (Docker build container + per-platform gradle
+bundling). For releases we want:
 
-Parity contract: do not break
-`TestTrinoFunctionAliases#testJavaPushableSetMatchesDuckDbMeta`. The Java
-side reads `trino_meta()`; this extension's table function must produce
-identical rows for the migrated set during the transition. Migrate in
-batches by category (string, numeric, regex, encoding, distance, hash,
-date, conditional) so the parity test stays green per-batch.
+- Drop bundled binaries from the artifacts dir on PR / push to `main`.
+- Tag-triggered job that also publishes a community-extensions catalog entry
+  (see item 2).
+- The trino-ducklake plugin jar in CI consumes the freshly-built binaries
+  via the same `build/<platform>/release/extension/trino_parity/`
+  layout the local Docker targets produce.
 
-Open question: do we keep `trino-function-aliases.sql` as a fallback for the
-case where the extension fails to load, or hard-require the extension?
-Recommend hard-require once the extension is published — the SQL fallback
-adds two code paths that drift.
+### 2. Publish to DuckDB community-extensions
 
-## 2. Add the missing string functions (placeholder elimination)
+Path to `INSTALL trino_parity FROM community; LOAD trino_parity;` —
+zero-binary-management for operators.
 
-The Trino-side translator currently ships three macros as `-- @placeholder`
-because DuckDB's built-ins diverge from Trino on non-ASCII input:
+- Add a `description.yml` (per
+  https://duckdb.org/community_extensions/documentation).
+- Submit a PR to https://github.com/duckdb/community-extensions adding our
+  description.
+- After acceptance, DuckDB CI builds and serves signed binaries from
+  `https://community-extensions.duckdb.org/...`.
+- The connector then drops the bundled binaries in favour of `INSTALL ...
+  FROM community` at attach time. No more 36MB-per-platform in the plugin jar.
 
-| Function | Divergence | ICU call |
-|---|---|---|
-| `trino_lower(s)` | DuckDB simple case folding. `lower('İ')` → `'i'` (DuckDB) vs `'i' + U+0307'` (Trino). | `u_strToLower` with root locale. |
-| `trino_upper(s)` | Same. `upper('ß')` → `'ẞ'` (U+1E9E, DuckDB) vs `'SS'` (Trino, full case folding expands single → two code points). | `u_strToUpper` with root locale. |
-| `trino_reverse(s)` | DuckDB is grapheme-cluster-aware; Trino is code-point-only. Diverges on combining marks (`'cafe' + U+0301'`) and ZWJ emoji sequences. | Iterate UTF-8 via `U8_NEXT`, push spans onto a buffer in reverse, re-encode with `U8_APPEND`. **Do not** use `u_strReverse` — it operates on UTF-16 code units, wrong granularity. |
+### 3. `trino_normalize/{1,2}` for NFC/NFD/NFKC/NFKD
 
-Full divergence catalog (verified empirically on Unicode corpus including
-Turkish İ, German ß, Greek sigma, CJK, single emoji, ZWJ family, combining
-marks, mixed-script):
-`ducklake-integrations/jvm/trino-ducklake/dev-docs/REPORT-string-unicode-audit.md`.
+DuckDB only ships `nfc_normalize`. ICU's `unorm2_normalize` covers all four
+forms. Add a native scalar function alongside `trino_lower`/`upper`/`reverse`;
+add a `trino_normalize` row to `trino_meta()` and to the connector's
+`PUSHABLE_FUNCTIONS`. Pin under the Unicode corpus in `REPORT-string-unicode-audit.md`.
 
-Likely additions in the same round:
+### 4. Native trim family
 
-- `trino_normalize(s, form)` — Trino supports NFC/NFD/NFKC/NFKD; DuckDB
-  only has `nfc_normalize`. ICU `unorm2_normalize` with the right
-  `UNormalization2` instance per form. Currently not in the pushable
-  set because of this gap.
-- `trino_trim(s)` / `trino_ltrim(s)` / `trino_rtrim(s)` — aligned today via
-  a macro that passes the full Java `Character.isWhitespace` set explicitly
-  to DuckDB's `trim(s, chars)`. Could move to a single C++ function that
-  matches Java's whitespace set directly. Not blocking; the macro version is
-  correct.
+`trino_trim` / `trino_ltrim` / `trino_rtrim` currently macro-wrap DuckDB's
+`trim(s, chars)` with a hand-rolled `Character.isWhitespace` charset string.
+Moving them to native C++ (iterate code points, skip Java-whitespace
+codepoints from both ends) would be marginally faster and avoid the risk of
+drifting from Java's whitespace definition. Not blocking — the macro form is
+correct today.
 
-ICU is already linked by DuckDB's bundled `icu` extension; reuse those
-symbols rather than vendoring ICU into vcpkg. The C++ side should
-`#include "unicode/unistr.h"` (or the C `u*` headers) and let CMake find
-ICU via DuckDB's existing build. If that turns out not to be exposed,
-fall back to adding `icu` to `vcpkg.json`.
+### 5. Migrate `from_hex` / `unhex` rounds + remaining macros
 
-Acceptance: drop the `-- @placeholder` tags in
-`trino-function-aliases.sql`, change the macro bodies to call the extension
-functions, add Trino-aligned semantic fixtures to
-`TestTrinoFunctionAliases#semanticCases()` covering the documented
-divergence corpus. After this round there are no more warn-on-emit
-placeholders.
-
-## 3. Test all this works
-
-Test surface:
-
-- Per-function SQL tests under `test/sql/` for the native ICU-backed
-  functions, covering the Unicode corpus from REPORT-string-unicode-audit.md
-  (Turkish İ, German ß, Greek capital/medial/final sigma, decomposed café,
-  ZWJ family emoji, combining-mark sequences, CJK).
-- A `trino_meta()` round-trip test: registered function set matches what
-  the table function reports.
-- A cross-engine test in the parent repo
-  (`TestTrinoFunctionAliases#semanticCases()`) that runs each function
-  through DuckDB and asserts against the Trino-spec expected value. This
-  already exists for the macro-based aliases; extend it for the new
-  native functions, then delete macro fixtures as functions migrate to
-  native registration.
-- The existing parity test
-  (`TestTrinoFunctionAliases#testJavaPushableSetMatchesDuckDbMeta`) keeps
-  the Java `PUSHABLE_FUNCTIONS` set in lockstep with this extension's
-  `trino_meta()` — drift is a build break.
-
-CI runs `make test` (DuckDB sqllogictests) via
-`.github/workflows/MainDistributionPipeline.yml`. Cross-engine tests live
-in the parent repo and run via Gradle.
+Some round-6 entries are still SQL macros (`trino_from_hex` calls DuckDB's
+`unhex`; multi-arg overload macros are stacked). Consolidate into single
+named overloads, audit for unused entries.

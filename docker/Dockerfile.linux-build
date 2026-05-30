@@ -1,0 +1,66 @@
+# Linux build environment for the trino_parity DuckDB extension.
+#
+# Used by `make linux-arm64` / `make linux-amd64` from the repo root to produce
+# `.duckdb_extension` binaries for Linux targets while developing on any host
+# (including macOS, where the Quack server testcontainer is a Linux image and
+# can't load darwin-built extensions).
+#
+# Layout:
+#   /opt/vcpkg            pinned vcpkg (same SHA as the template's host
+#                          bootstrap instructions for binary cache compatibility)
+#   /vcpkg-cache          mountpoint for VCPKG_DEFAULT_BINARY_CACHE — persists
+#                          ICU et al. across container runs
+#   /root/.cache/ccache   mountpoint for ccache — persists object cache
+#   /src                  read-mostly mount of the extension source repo
+#                          (everything except the host's build/ dir)
+#   /out                  per-platform host output directory; the entrypoint
+#                          copies the built .duckdb_extension here so the host
+#                          gets `build/<platform>/release/extension/trino_parity/`
+#
+# The build itself runs inside /workdir via rsync from /src — this isolates the
+# in-container DuckDB build from the host's `build/release/` (which holds the
+# darwin-arm64 artifact and would otherwise collide).
+
+FROM debian:bookworm-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+        autoconf \
+        autoconf-archive \
+        automake \
+        build-essential \
+        ca-certificates \
+        ccache \
+        clang \
+        cmake \
+        curl \
+        git \
+        libtool \
+        ninja-build \
+        pkg-config \
+        python3 \
+        rsync \
+        tar \
+        unzip \
+        zip \
+ && rm -rf /var/lib/apt/lists/*
+
+# vcpkg pin — matches the host bootstrap commit documented in the
+# extension README so binary cache hits work across host + container.
+ARG VCPKG_REV=ce613c41372b23b1f51333815feb3edd87ef8a8b
+RUN git clone https://github.com/Microsoft/vcpkg.git /opt/vcpkg \
+ && cd /opt/vcpkg \
+ && git checkout "${VCPKG_REV}" \
+ && ./bootstrap-vcpkg.sh -disableMetrics
+
+ENV VCPKG_TOOLCHAIN_PATH=/opt/vcpkg/scripts/buildsystems/vcpkg.cmake
+ENV PATH=/usr/lib/ccache:$PATH
+
+WORKDIR /workdir
+
+COPY build-in-container.sh /usr/local/bin/build-in-container
+RUN chmod +x /usr/local/bin/build-in-container
+
+ENTRYPOINT ["/usr/local/bin/build-in-container"]

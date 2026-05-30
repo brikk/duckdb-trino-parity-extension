@@ -118,6 +118,35 @@ Artifacts:
   loadable binary
 - `build/release/test/unittest` — sqllogic test runner
 
+### Cross-platform builds via Docker
+
+The connector's Quack server runs as a Linux testcontainer; on a macOS dev box
+a host-built (darwin-arm64) `.duckdb_extension` cannot be loaded there. Two
+make targets build Linux variants inside a Docker container:
+
+```bash
+make linux-arm64    # native on Apple Silicon; ~10-15 min first run, seconds thereafter
+make linux-amd64    # slower under Rosetta/qemu on Apple Silicon
+make all-platforms  # both
+```
+
+Output layout (one .duckdb_extension per platform, all optional, all
+independently consumable by the trino-ducklake plugin jar's gradle bundling):
+
+```
+build/release/extension/trino_parity/trino_parity.duckdb_extension              # host (output of `make`)
+build/linux-arm64/release/extension/trino_parity/trino_parity.duckdb_extension  # `make linux-arm64`
+build/linux-amd64/release/extension/trino_parity/trino_parity.duckdb_extension  # `make linux-amd64`
+```
+
+Shared vcpkg binary cache and ccache (named Docker volumes) keep subsequent
+builds fast. See `docker/Dockerfile.linux-build` and
+`docker/build-in-container.sh` for details.
+
+Multi-platform release builds via GitHub Actions are tracked in
+[TODO.md](TODO.md) — the upstream extension template's
+`MainDistributionPipeline.yml` workflow is wired up but not yet running.
+
 ## Testing
 
 ```bash
