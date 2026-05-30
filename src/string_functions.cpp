@@ -155,8 +155,7 @@ void TrinoRtrimFun(DataChunk &args, ExpressionState &state, Vector &result) {
 		const auto *src = reinterpret_cast<const uint8_t *>(s.GetData());
 		int32_t len = static_cast<int32_t>(s.GetSize());
 		int32_t end = SkipTrailingWhitespace(src, 0, len);
-		return StringVector::AddString(result, reinterpret_cast<const char *>(src),
-		                               static_cast<idx_t>(end));
+		return StringVector::AddString(result, reinterpret_cast<const char *>(src), static_cast<idx_t>(end));
 	});
 }
 
@@ -190,8 +189,7 @@ inline std::string NormalizeWith(const icu::Normalizer2 &norm, const char *data,
 	UErrorCode err = U_ZERO_ERROR;
 	icu::UnicodeString out_us = norm.normalize(in, err);
 	if (U_FAILURE(err)) {
-		throw InvalidInputException(StringUtil::Format("trino_normalize: ICU normalize failed (%s)",
-		                                               u_errorName(err)));
+		throw InvalidInputException(StringUtil::Format("trino_normalize: ICU normalize failed (%s)", u_errorName(err)));
 	}
 	std::string out;
 	out_us.toUTF8String(out);
@@ -237,10 +235,8 @@ void RegisterStringFunctions(ExtensionLoader &loader) {
 	loader.RegisterFunction(
 	    ScalarFunction("trino_reverse", {LogicalType::VARCHAR}, LogicalType::VARCHAR, TrinoReverseFun));
 	loader.RegisterFunction(ScalarFunction("trino_trim", {LogicalType::VARCHAR}, LogicalType::VARCHAR, TrinoTrimFun));
-	loader.RegisterFunction(
-	    ScalarFunction("trino_ltrim", {LogicalType::VARCHAR}, LogicalType::VARCHAR, TrinoLtrimFun));
-	loader.RegisterFunction(
-	    ScalarFunction("trino_rtrim", {LogicalType::VARCHAR}, LogicalType::VARCHAR, TrinoRtrimFun));
+	loader.RegisterFunction(ScalarFunction("trino_ltrim", {LogicalType::VARCHAR}, LogicalType::VARCHAR, TrinoLtrimFun));
+	loader.RegisterFunction(ScalarFunction("trino_rtrim", {LogicalType::VARCHAR}, LogicalType::VARCHAR, TrinoRtrimFun));
 	loader.RegisterFunction(
 	    ScalarFunction("trino_normalize", {LogicalType::VARCHAR}, LogicalType::VARCHAR, TrinoNormalizeFun));
 	loader.RegisterFunction(ScalarFunction("trino_normalize", {LogicalType::VARCHAR, LogicalType::VARCHAR},
