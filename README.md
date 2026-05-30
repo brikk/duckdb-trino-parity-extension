@@ -43,14 +43,15 @@ on the parent connector repo.
 
 ## Function inventory
 
-`trino_meta()` is the source of truth — 91 entries across 8 categories. A
-representative slice (see [`src/trino_function_aliases.sql`](src/trino_function_aliases.sql)
-for the full list):
+`trino_meta()` is the source of truth — 93 entries across 8 categories. A
+representative slice (full list lives in
+[`src/macro_definitions.cpp`](src/macro_definitions.cpp) under
+`kTrinoMacros[]` + `kTrinoTableMacros[]`):
 
 | Category | Functions |
 |---|---|
-| String (native, ICU) | `trino_lower/1`, `trino_upper/1`, `trino_reverse/1` |
-| String (macro) | `trino_length/1`, `trino_substring/{2,3}`, `trino_trim/1`, `trino_ltrim/1`, `trino_rtrim/1`, `trino_replace/3`, `trino_strpos/2`, `trino_starts_with/2`, `trino_lpad/3`, `trino_rpad/3`, `trino_concat_ws/{2..5}`, `trino_translate/3`, `trino_chr/1`, `trino_bit_length/1` |
+| String (native, ICU) | `trino_lower/1`, `trino_upper/1`, `trino_reverse/1`, `trino_trim/1`, `trino_ltrim/1`, `trino_rtrim/1`, `trino_normalize/{1,2}` |
+| String (macro) | `trino_length/1`, `trino_substring/{2,3}`, `trino_replace/3`, `trino_strpos/2`, `trino_starts_with/2`, `trino_lpad/3`, `trino_rpad/3`, `trino_concat_ws/{2..5}`, `trino_translate/3`, `trino_chr/1`, `trino_bit_length/1` |
 | Numeric | `trino_abs`, `trino_ceil`, `trino_floor`, `trino_mod`, `trino_power`, `trino_sqrt`, `trino_exp`, `trino_ln`, `trino_log2`, `trino_log10`, `trino_sign`, `trino_pi/0`, `trino_truncate`, `trino_sin/cos/tan/asin/acos/atan/atan2`, `trino_sinh/cosh/tanh`, `trino_degrees/radians`, `trino_cbrt` |
 | Bitwise | `trino_bitwise_and/or/not/xor`, `trino_bitwise_left_shift`, `trino_bitwise_right_shift` |
 | Regex (RE2 on both sides) | `trino_regexp_like/2`, `trino_regexp_extract/{2,3}`, `trino_regexp_replace/{2,3}` |
@@ -60,10 +61,25 @@ for the full list):
 | Date | `trino_year/month/day/quarter`, `trino_date_trunc/2`, `trino_date_diff/3`, `trino_day_of_week/year`, `trino_last_day_of_month`, `trino_week/week_of_year`, `trino_year_of_week`, `trino_yow`, `trino_hour/minute/second/millisecond`, `trino_to_unixtime`, `trino_from_unixtime`, `trino_with_timezone` |
 | Conditional | `trino_if/{2,3}` |
 
-`trino_with_timezone` requires DuckDB's bundled `icu` extension for `timezone()`;
-the load sequence does `INSTALL icu; LOAD icu;` best-effort, so a sandboxed env
-without that extension installs fine and only fails if `trino_with_timezone` is
-actually called.
+The native string functions all use the statically-linked ICU and match
+Java's Unicode semantics exactly:
+
+- `trino_lower` / `trino_upper`: full case folding via `u_strToLower` /
+  `u_strToUpper` with root locale (Turkish `İ` → `'i'` + U+0307, German
+  `ß` → `'SS'`).
+- `trino_reverse`: code-point reverse via `U8_PREV` (combining marks
+  detach, ZWJ emoji reverse boundary-by-boundary).
+- `trino_trim` / `trino_ltrim` / `trino_rtrim`: skip code points where
+  `u_isWhitespace` is true (Java's `Character.isWhitespace` — NBSP /
+  U+2007 / U+202F intentionally NOT stripped).
+- `trino_normalize/{1,2}`: `icu::Normalizer2::getNF{C,D,KC,KD}Instance`,
+  with `'NFC'` / `'NFD'` / `'NFKC'` / `'NFKD'` accepted case-insensitively;
+  1-arg defaults to NFC.
+
+`trino_with_timezone` requires DuckDB's bundled `icu` extension for
+`timezone()`; the load sequence does `INSTALL icu; LOAD icu;` best-effort,
+so a sandboxed env without that extension installs fine and only fails if
+`trino_with_timezone` is actually called.
 
 ## Installation
 
@@ -177,22 +193,28 @@ behaviour.
 
 ## Architecture
 
-Three source files plus the build-time SQL embed:
+Four source files:
 
-- `src/string_functions.cpp` — native C++ scalar functions backed by statically
-  linked ICU. Currently `trino_lower`, `trino_upper`, `trino_reverse`. Future:
-  `trino_normalize/{1,2}` for NFC/NFD/NFKC/NFKD, possibly the trim family.
-- `src/trino_function_aliases.sql` — source of truth for the macro layer.
-  Edit this file; the build pipeline embeds it via CMake `configure_file`
-  into a generated `.cpp` that defines `kTrinoAliasSql` as a raw string.
-- `src/alias_macros_loader.cpp` — runs the embedded SQL at `LoadInternal`
-  time. Statements are split on top-level semicolons by a small state machine
-  that handles `--` line comments and single-quoted literals. `INSTALL` /
-  `LOAD` statements are treated as best-effort (Printer::Warning on failure,
-  continue); all other failures propagate as `IOException` and abort the
-  extension load.
+- `src/string_functions.cpp` — native C++ scalar functions backed by
+  statically linked ICU: `trino_lower`, `trino_upper`, `trino_reverse`,
+  `trino_trim`, `trino_ltrim`, `trino_rtrim`, `trino_normalize/{1,2}`.
+  These are the places where DuckDB's built-ins diverge from Trino on
+  real-world Unicode input; rewriting in C++ via ICU pins exact Java
+  semantics.
+- `src/macro_definitions.cpp` — `DefaultMacro[] kTrinoMacros` and
+  `DefaultTableMacro[] kTrinoTableMacros` arrays. Each entry maps a
+  Trino call shape to its DuckDB body; multi-overload macros sit as
+  consecutive same-name entries. This is the source of truth for the
+  macro layer — the historical `.sql` file is gone.
+- `src/alias_macros_loader.cpp` — `RegisterAliasMacros(loader)` iterates
+  the arrays and registers each via
+  `DefaultFunctionGenerator::CreateInternalMacroInfo` /
+  `DefaultTableFunctionGenerator::CreateTableMacroInfo` (the same path
+  DuckDB's bundled `json` extension uses). No SQL parse loop. Also runs
+  a small `INSTALL icu; LOAD icu;` best-effort so
+  `trino_with_timezone` can resolve DuckDB's `timezone()`.
 - `src/trino_parity_extension.cpp` — entry point. Registers the native
-  functions first, then runs the alias SQL.
+  functions first, then the macros.
 
 ICU is statically linked via vcpkg (ICU 74 components: `uc`, `i18n`, `data`).
 This adds ~30MB to the loadable extension binary; the trade-off buys
@@ -200,17 +222,13 @@ deterministic Unicode behaviour independent of the host DuckDB build.
 
 ## Future work
 
-See [`TODO.md`](TODO.md). Highlights:
+See [`TODO.md`](TODO.md). Headline items:
 
-- Migrate macros from `Connection::Query` to DuckDB's native `DefaultMacro[]` +
-  `DefaultFunctionGenerator::CreateInternalMacroInfo()` helper. This is the
-  more idiomatic pattern used by extensions like Query-farm's
-  [clickhouse-sql](https://github.com/Query-farm/clickhouse-sql); equivalent
-  output, skips the SQL parse loop at load.
-- Add `trino_normalize/{1,2}` (NFC/NFD/NFKC/NFKD) — DuckDB only ships `nfc_normalize`.
-- Promote `trino_trim`/`ltrim`/`rtrim` from macros (which hand-roll the Java
-  `Character.isWhitespace` set as a character argument) to native C++ for
-  efficiency and to avoid drift if Java's whitespace set ever changes.
+- CI build matrix for release artifacts via `MainDistributionPipeline.yml`,
+  unblocking the path to publishing on
+  [community-extensions](https://github.com/duckdb/community-extensions).
+- Consolidate the remaining macro entries that wrap DuckDB built-ins
+  (`from_hex` / `unhex` etc.) — clean-up, not correctness.
 
 ## License
 

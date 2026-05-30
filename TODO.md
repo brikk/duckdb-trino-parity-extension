@@ -11,16 +11,24 @@ built-ins diverge.
 
 - ✅ Native ICU-backed `trino_lower` / `trino_upper` / `trino_reverse`
   (root-locale full case folding, code-point reverse).
-- ✅ `~86` `trino_<name>` macros registered as native `DefaultMacro[]` via
+- ✅ Native ICU-backed `trino_trim` / `trino_ltrim` / `trino_rtrim` via
+  `u_isWhitespace` (Java `Character.isWhitespace` semantics — NBSP /
+  FIGURE / NARROW NBSP intentionally NOT whitespace).
+- ✅ Native `trino_normalize/{1,2}` via `icu::Normalizer2` instances
+  (NFC default; 2-arg accepts NFC/NFD/NFKC/NFKD case-insensitively).
+- ✅ `~80` `trino_<name>` macros registered as native `DefaultMacro[]` via
   `DefaultFunctionGenerator::CreateInternalMacroInfo` — no SQL parse loop
   at load time (matches `json` extension and Query-farm's `clickhouse-sql`).
 - ✅ `trino_meta()` table macro as `DefaultTableMacro[]` — authoritative
-  pushable-set catalog the connector mirrors in
+  pushable-set catalog (93 entries) the connector mirrors in
   `DuckDbExpressionTranslator.PUSHABLE_FUNCTIONS`.
 - ✅ ICU best-effort INSTALL/LOAD on extension load so `trino_with_timezone`
   resolves DuckDB's `timezone()`.
 - ✅ Linux build container (`make linux-arm64`, `make linux-amd64`) for
   cross-platform binaries when developing on macOS.
+- ✅ CI-artifact fallback script
+  ([`scripts/fetch-from-ci-artifacts.sh`](scripts/fetch-from-ci-artifacts.sh))
+  for pulling platform builds without running the local container.
 
 ## Open
 
@@ -33,14 +41,21 @@ That builds and signs binaries for every standard DuckDB platform
 them as workflow artifacts.
 
 Local-dev story works today (Docker build container + per-platform gradle
-bundling). For releases we want:
+bundling + the fetch-from-CI script). For releases we want:
 
-- Drop bundled binaries from the artifacts dir on PR / push to `main`.
+- Stable artifact naming so consumers can pin tags.
 - Tag-triggered job that also publishes a community-extensions catalog entry
   (see item 2).
 - The trino-ducklake plugin jar in CI consumes the freshly-built binaries
   via the same `build/<platform>/release/extension/trino_parity/`
   layout the local Docker targets produce.
+
+Known CI failure mode to chase: an earlier run hit a `multiple definition
+of duckdb::BufferedFileWriter::DEFAULT_OPEN_FLAGS` link error in DuckDB's
+own `tools/plan_serializer` under `gcc-toolset-14` on Linux. If it
+recurs after the current code passes format/tidy, we can either bump the
+DuckDB submodule past v1.5.3 or disable that tool target from the
+extension's CMake.
 
 ### 2. Publish to DuckDB community-extensions
 
@@ -56,23 +71,7 @@ zero-binary-management for operators.
 - The connector then drops the bundled binaries in favour of `INSTALL ...
   FROM community` at attach time. No more 36MB-per-platform in the plugin jar.
 
-### 3. `trino_normalize/{1,2}` for NFC/NFD/NFKC/NFKD
-
-DuckDB only ships `nfc_normalize`. ICU's `unorm2_normalize` covers all four
-forms. Add a native scalar function alongside `trino_lower`/`upper`/`reverse`;
-add a `trino_normalize` row to `trino_meta()` and to the connector's
-`PUSHABLE_FUNCTIONS`. Pin under the Unicode corpus in `REPORT-string-unicode-audit.md`.
-
-### 4. Native trim family
-
-`trino_trim` / `trino_ltrim` / `trino_rtrim` currently macro-wrap DuckDB's
-`trim(s, chars)` with a hand-rolled `Character.isWhitespace` charset string.
-Moving them to native C++ (iterate code points, skip Java-whitespace
-codepoints from both ends) would be marginally faster and avoid the risk of
-drifting from Java's whitespace definition. Not blocking — the macro form is
-correct today.
-
-### 5. Migrate `from_hex` / `unhex` rounds + remaining macros
+### 3. Migrate `from_hex` / `unhex` rounds + remaining macros
 
 Some round-6 entries are still SQL macros (`trino_from_hex` calls DuckDB's
 `unhex`; multi-arg overload macros are stacked). Consolidate into single
