@@ -4,6 +4,7 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/function/scalar_function.hpp"
 
+#include <unicode/locid.h>
 #include <unicode/unistr.h>
 #include <unicode/utf8.h>
 
@@ -24,7 +25,7 @@ void TrinoLowerFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &input = args.data[0];
 	UnaryExecutor::Execute<string_t, string_t>(input, result, args.size(), [&](string_t s) {
 		icu::UnicodeString us = icu::UnicodeString::fromUTF8(icu::StringPiece(s.GetData(), s.GetSize()));
-		us.toLower("");
+		us.toLower(icu::Locale::getRoot());
 		std::string out;
 		us.toUTF8String(out);
 		return StringVector::AddString(result, out);
@@ -40,7 +41,7 @@ void TrinoUpperFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &input = args.data[0];
 	UnaryExecutor::Execute<string_t, string_t>(input, result, args.size(), [&](string_t s) {
 		icu::UnicodeString us = icu::UnicodeString::fromUTF8(icu::StringPiece(s.GetData(), s.GetSize()));
-		us.toUpper("");
+		us.toUpper(icu::Locale::getRoot());
 		std::string out;
 		us.toUTF8String(out);
 		return StringVector::AddString(result, out);

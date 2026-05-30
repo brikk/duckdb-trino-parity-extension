@@ -37,7 +37,7 @@ NULL
 #   Trino + ICU root        = 'i' + U+0307  (2 code points, full case folding)
 # Assert bytes via BLOB equality to side-step renderer ambiguity.
 query I
-SELECT trino_lower(chr(304))::BLOB = '\x69\xCC\x87'::BLOB;
+SELECT encode(trino_lower(chr(304))) = '\x69\xCC\x87'::BLOB;
 ----
 true
 
@@ -121,7 +121,7 @@ NULL
 # U+0301 'e' 'f' 'a' 'c' — 5 code points, 6 bytes (combining acute is 2-byte UTF-8).
 # DuckDB built-in reverse() keeps the 'e' + U+0301 grapheme together; ours splits.
 query I
-SELECT trino_reverse('cafe' || chr(769))::BLOB = '\xCC\x81\x65\x66\x61\x63'::BLOB;
+SELECT encode(trino_reverse('cafe' || chr(769))) = '\xCC\x81\x65\x66\x61\x63'::BLOB;
 ----
 true
 
@@ -145,7 +145,7 @@ SELECT length(trino_reverse('a😀b'));
 # Trino reverse → girl, ZWJ, woman, ZWJ, man (bytes flipped per code point).
 # DuckDB built-in reverse leaves it unchanged (treats as one grapheme cluster).
 query I
-SELECT trino_reverse('👨‍👩‍👧')::BLOB = '\xF0\x9F\x91\xA7\xE2\x80\x8D\xF0\x9F\x91\xA9\xE2\x80\x8D\xF0\x9F\x91\xA8'::BLOB;
+SELECT encode(trino_reverse('👨‍👩‍👧')) = '\xF0\x9F\x91\xA7\xE2\x80\x8D\xF0\x9F\x91\xA9\xE2\x80\x8D\xF0\x9F\x91\xA8'::BLOB;
 ----
 true
 
@@ -181,6 +181,6 @@ hello
 # trino_lower('İ') gives 'I' + U+0307, NOT back to U+0130. This is the
 # documented Trino/Java behaviour and the contract we're enforcing.
 query I
-SELECT trino_upper(trino_lower(chr(304)))::BLOB = '\x49\xCC\x87'::BLOB;
+SELECT encode(trino_upper(trino_lower(chr(304)))) = '\x49\xCC\x87'::BLOB;
 ----
 true

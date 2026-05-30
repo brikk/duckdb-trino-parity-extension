@@ -4,8 +4,9 @@ set(TARGET_NAME trino_parity)
 
 # ICU provides the Unicode case-folding and UTF-8 iteration primitives used
 # by trino_lower / trino_upper / trino_reverse. Linked statically via vcpkg
-# so the extension is self-contained at LOAD time.
-find_package(ICU REQUIRED COMPONENTS uc i18n)
+# so the extension is self-contained at LOAD time. `data` carries the
+# Unicode tables (~30MB); without it the link errors on _icudt<ver>_dat.
+find_package(ICU REQUIRED COMPONENTS uc i18n data)
 
 set(EXTENSION_NAME ${TARGET_NAME}_extension)
 set(LOADABLE_EXTENSION_NAME ${TARGET_NAME}_loadable_extension)
@@ -24,8 +25,8 @@ set(EXTENSION_SOURCES
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
 
-target_link_libraries(${EXTENSION_NAME} ICU::uc ICU::i18n)
-target_link_libraries(${LOADABLE_EXTENSION_NAME} ICU::uc ICU::i18n)
+target_link_libraries(${EXTENSION_NAME} ICU::i18n ICU::uc ICU::data)
+target_link_libraries(${LOADABLE_EXTENSION_NAME} ICU::i18n ICU::uc ICU::data)
 
 install(
   TARGETS ${EXTENSION_NAME}
