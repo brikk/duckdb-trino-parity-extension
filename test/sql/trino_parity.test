@@ -1,23 +1,186 @@
 # name: test/sql/trino_parity.test
-# description: test trino_parity extension
+# description: trino_lower / trino_upper / trino_reverse — parity with Trino on
+#              Unicode inputs where DuckDB's built-ins diverge. Corpus drawn
+#              from REPORT-string-unicode-audit.md in the parent connector
+#              repo.
 # group: [sql]
 
-# Before we load the extension, this will fail
+# Before LOAD: functions don't exist.
 statement error
-SELECT trino_parity('Sam');
+SELECT trino_lower('x');
 ----
-Catalog Error: Scalar Function with name trino_parity does not exist!
+Catalog Error
 
-# Require statement will ensure this test is run with this extension loaded
 require trino_parity
 
-# Confirm the extension works
-query I
-SELECT trino_parity('Sam');
-----
-...........🦆 Sam
+# -----------------------------------------------------------------------------
+# trino_lower
+# -----------------------------------------------------------------------------
 
 query I
-SELECT trino_parity_openssl_version('Michael') ILIKE 'TrinoParity Michael, my linked OpenSSL version is OpenSSL%';
+SELECT trino_lower('HELLO WORLD');
+----
+hello world
+
+query I
+SELECT trino_lower('');
+----
+(empty)
+
+query I
+SELECT trino_lower(NULL);
+----
+NULL
+
+# Turkish capital dotted I (U+0130).
+#   DuckDB built-in lower() = 'i'           (1 code point, simple case folding)
+#   Trino + ICU root        = 'i' + U+0307  (2 code points, full case folding)
+# Assert bytes via BLOB equality to side-step renderer ambiguity.
+query I
+SELECT trino_lower(chr(304))::BLOB = '\x69\xCC\x87'::BLOB;
+----
+true
+
+# Same input, code-point length must be 2 (not 1).
+query I
+SELECT length(trino_lower(chr(304)));
+----
+2
+
+# Greek capital sigma → medial sigma under root locale (final-sigma rule is
+# locale-specific and not applied here, matching Java Locale.ROOT).
+query I
+SELECT trino_lower('Σ');
+----
+σ
+
+# ASCII inside a larger non-ASCII string — case folding leaves non-letters alone.
+query I
+SELECT trino_lower('Café 日本');
+----
+café 日本
+
+# -----------------------------------------------------------------------------
+# trino_upper
+# -----------------------------------------------------------------------------
+
+query I
+SELECT trino_upper('hello world');
+----
+HELLO WORLD
+
+query I
+SELECT trino_upper('');
+----
+(empty)
+
+query I
+SELECT trino_upper(NULL);
+----
+NULL
+
+# German sharp s (U+00DF).
+#   DuckDB built-in upper() = 'ẞ'  (U+1E9E, 1 code point)
+#   Trino + ICU root        = 'SS' (2 code points, full case folding expansion)
+query I
+SELECT trino_upper('ß');
+----
+SS
+
+query I
+SELECT length(trino_upper('ß'));
+----
+2
+
+# Multiple ß expand independently.
+query I
+SELECT trino_upper('straße strauß');
+----
+STRASSE STRAUSS
+
+# -----------------------------------------------------------------------------
+# trino_reverse
+# -----------------------------------------------------------------------------
+
+query I
+SELECT trino_reverse('hello');
+----
+olleh
+
+query I
+SELECT trino_reverse('');
+----
+(empty)
+
+query I
+SELECT trino_reverse(NULL);
+----
+NULL
+
+# Decomposed café: 'c' 'a' 'f' 'e' + U+0301. Reversed by code point:
+# U+0301 'e' 'f' 'a' 'c' — 5 code points, 6 bytes (combining acute is 2-byte UTF-8).
+# DuckDB built-in reverse() keeps the 'e' + U+0301 grapheme together; ours splits.
+query I
+SELECT trino_reverse('cafe' || chr(769))::BLOB = '\xCC\x81\x65\x66\x61\x63'::BLOB;
+----
+true
+
+query I
+SELECT length(trino_reverse('cafe' || chr(769)));
+----
+5
+
+# Single 4-byte emoji (1 code point) stays intact, just relocated.
+query I
+SELECT trino_reverse('a😀b');
+----
+b😀a
+
+query I
+SELECT length(trino_reverse('a😀b'));
+----
+3
+
+# ZWJ family emoji '👨‍👩‍👧' (5 code points: man, ZWJ, woman, ZWJ, girl).
+# Trino reverse → girl, ZWJ, woman, ZWJ, man (bytes flipped per code point).
+# DuckDB built-in reverse leaves it unchanged (treats as one grapheme cluster).
+query I
+SELECT trino_reverse('👨‍👩‍👧')::BLOB = '\xF0\x9F\x91\xA7\xE2\x80\x8D\xF0\x9F\x91\xA9\xE2\x80\x8D\xF0\x9F\x91\xA8'::BLOB;
+----
+true
+
+query I
+SELECT length(trino_reverse('👨‍👩‍👧'));
+----
+5
+
+# CJK round-trip: pure code-point reverse on 3 BMP characters.
+query I
+SELECT trino_reverse('日本語');
+----
+語本日
+
+# -----------------------------------------------------------------------------
+# Composability — confirm functions chain cleanly. Note: lower/upper do NOT
+# round-trip for inputs like 'İ' (full case folding expands U+0130 → 'i'+U+0307
+# on the way down, and the upper coming back is 'I'+U+0307, not U+0130).
+# Use ASCII inputs for the round-trip assertion.
+# -----------------------------------------------------------------------------
+
+query I
+SELECT trino_upper(trino_lower('HELLO WORLD'));
+----
+HELLO WORLD
+
+query I
+SELECT trino_reverse(trino_reverse('hello'));
+----
+hello
+
+# Explicit non-round-trip pin for full-case-folding: trino_upper of
+# trino_lower('İ') gives 'I' + U+0307, NOT back to U+0130. This is the
+# documented Trino/Java behaviour and the contract we're enforcing.
+query I
+SELECT trino_upper(trino_lower(chr(304)))::BLOB = '\x49\xCC\x87'::BLOB;
 ----
 true
