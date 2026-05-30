@@ -143,9 +143,21 @@ Shared vcpkg binary cache and ccache (named Docker volumes) keep subsequent
 builds fast. See `docker/Dockerfile.linux-build` and
 `docker/build-in-container.sh` for details.
 
-Multi-platform release builds via GitHub Actions are tracked in
-[TODO.md](TODO.md) — the upstream extension template's
-`MainDistributionPipeline.yml` workflow is wired up but not yet running.
+### Fetching CI-built binaries (no local build)
+
+GitHub Actions builds the cross-platform matrix on every push to `main`. To pull
+the latest successful run's binaries instead of building locally:
+
+```bash
+scripts/fetch-from-ci-artifacts.sh                # latest successful run
+scripts/fetch-from-ci-artifacts.sh --run <id>     # specific run
+scripts/fetch-from-ci-artifacts.sh --platform linux-arm64,linux-amd64
+```
+
+The script uses the `gh` CLI (must be authenticated) and lands the binaries in
+the same `build/<platform>/release/extension/trino_parity/` paths the local
+`make` targets produce — so the connector's gradle bundling picks them up
+without any further configuration.
 
 ## Testing
 
