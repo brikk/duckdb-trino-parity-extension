@@ -185,6 +185,161 @@ SELECT encode(trino_upper(trino_lower(chr(304)))) = '\x49\xCC\x87'::BLOB;
 ----
 true
 
+# -----------------------------------------------------------------------------
+# trino_trim / trino_ltrim / trino_rtrim — native (ICU u_isWhitespace,
+# Java's Character.isWhitespace semantics).
+# -----------------------------------------------------------------------------
+
+# ASCII space — both ends.
+query I
+SELECT trino_trim('  hello  ');
+----
+hello
+
+# Java whitespace coverage: tab, LF, CR, FF, VT all stripped.
+query I
+SELECT trino_trim(chr(9) || chr(10) || chr(13) || 'hi' || chr(11) || chr(12));
+----
+hi
+
+# U+1680 OGHAM SPACE MARK — stripped (Java treats as whitespace).
+query I
+SELECT trino_trim(chr(5760) || 'hi' || chr(5760));
+----
+hi
+
+# U+3000 IDEOGRAPHIC SPACE — stripped.
+query I
+SELECT trino_trim(chr(12288) || 'hi' || chr(12288));
+----
+hi
+
+# U+00A0 NBSP — NOT stripped (Java spec excludes; "non-breaking"). Assert
+# byte-identical to input since rendering NBSP in the test file is fragile.
+query I
+SELECT encode(trino_trim(chr(160) || 'hi' || chr(160))) = encode(chr(160) || 'hi' || chr(160));
+----
+true
+
+# U+2007 FIGURE SPACE — NOT stripped.
+query I
+SELECT encode(trino_trim(chr(8199) || 'hi' || chr(8199))) = encode(chr(8199) || 'hi' || chr(8199));
+----
+true
+
+# U+202F NARROW NBSP — NOT stripped.
+query I
+SELECT encode(trino_trim(chr(8239) || 'hi' || chr(8239))) = encode(chr(8239) || 'hi' || chr(8239));
+----
+true
+
+# Left-only / right-only. Spaces on the OTHER end must survive — sqllogic
+# strips trailing whitespace from expected output lines, so assert via
+# BLOB equality for the form with trailing spaces.
+query I
+SELECT trino_ltrim('  hello  ') = 'hello  ';
+----
+true
+
+query I
+SELECT trino_rtrim('  hello  ');
+----
+  hello
+
+# Empty / all-whitespace.
+query I
+SELECT trino_trim('');
+----
+(empty)
+
+query I
+SELECT trino_trim('   ');
+----
+(empty)
+
+# NULL propagation.
+query I
+SELECT trino_trim(NULL);
+----
+NULL
+
+# -----------------------------------------------------------------------------
+# trino_normalize — native (ICU Normalizer2 with NFC/NFD/NFKC/NFKD instances).
+# -----------------------------------------------------------------------------
+
+# Single-arg form defaults to NFC. Decomposed café (5 cp) collapses to
+# composed café (4 cp, with U+00E9 'é').
+query I
+SELECT trino_normalize('cafe' || chr(769));
+----
+café
+
+query I
+SELECT length(trino_normalize('cafe' || chr(769)));
+----
+4
+
+# Two-arg form: NFD decomposes composed 'é' (U+00E9) into 'e' + U+0301.
+query I
+SELECT length(trino_normalize('café', 'NFD'));
+----
+5
+
+query I
+SELECT encode(trino_normalize('café', 'NFD')) = '\x63\x61\x66\x65\xCC\x81'::BLOB;
+----
+true
+
+# Case-insensitive form name.
+query I
+SELECT trino_normalize('cafe' || chr(769), 'nfc');
+----
+café
+
+# NFKC: compatibility decomposition + canonical composition. Ligature U+FB01 ('ﬁ')
+# decomposes to 'f' + 'i' under NFKC, but stays as ligature under NFC.
+# Use chr/length to assert byte-precisely since the ligature renders similarly to 'fi'.
+
+# NFC preserves the ligature (1 code point).
+query I
+SELECT length(trino_normalize(chr(64257), 'NFC'));
+----
+1
+
+query I
+SELECT trino_normalize(chr(64257), 'NFC') = chr(64257);
+----
+true
+
+# NFKC decomposes to 'f' + 'i' (2 code points, ASCII).
+query I
+SELECT trino_normalize(chr(64257), 'NFKC') = 'fi';
+----
+true
+
+# NFKD: full compatibility decomposition (same chars here, since 'f' and 'i' are already atomic).
+query I
+SELECT length(trino_normalize(chr(64257), 'NFKD'));
+----
+2
+
+# Empty + NULL.
+query I
+SELECT trino_normalize('');
+----
+(empty)
+
+query I
+SELECT trino_normalize(NULL);
+----
+NULL
+
+# Unknown form raises a clear error.
+statement error
+SELECT trino_normalize('x', 'bogus');
+----
+trino_normalize: unsupported form 'bogus'
+
 # =============================================================================
 # SQL alias macros + trino_meta()
 #
@@ -302,7 +457,7 @@ NULL
 query I
 SELECT count(*) FROM trino_meta();
 ----
-91
+93
 
 # Row shape: three columns, expected types.
 query III

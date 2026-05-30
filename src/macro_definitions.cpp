@@ -32,26 +32,13 @@ const DefaultMacro kTrinoMacros[] = {
     // length(varchar) -> bigint. Code-point count, NOT bytes — aligned in both engines.
     {DEFAULT_SCHEMA, "trino_length", {"s", nullptr}, {{nullptr, nullptr}}, "length(s)"},
 
-    // trino__java_whitespace_chars: helper used by trim/ltrim/rtrim. Matches Java's
-    // Character.isWhitespace set (HT LF VT FF CR FS GS RS US SPACE + Unicode space
-    // separators). U+00A0 NBSP, U+2007 FIGURE SPACE, U+202F NARROW NBSP are
-    // intentionally excluded per Java spec.
-    {DEFAULT_SCHEMA, "trino__java_whitespace_chars", {nullptr}, {{nullptr, nullptr}},
-     "chr(9) || chr(10) || chr(11) || chr(12) || chr(13) "
-     "|| chr(28) || chr(29) || chr(30) || chr(31) || chr(32) "
-     "|| chr(5760) "
-     "|| chr(8192) || chr(8193) || chr(8194) || chr(8195) "
-     "|| chr(8196) || chr(8197) || chr(8198) "
-     "|| chr(8200) || chr(8201) || chr(8202) "
-     "|| chr(8232) || chr(8233) "
-     "|| chr(8287) "
-     "|| chr(12288)"},
-
-    // trim family — DuckDB's bare trim() strips only ASCII space + EM SPACE; we pass
-    // the explicit Java-whitespace set so trim aligns with Trino's String.strip().
-    {DEFAULT_SCHEMA, "trino_trim",  {"s", nullptr}, {{nullptr, nullptr}}, "trim(s,  trino__java_whitespace_chars())"},
-    {DEFAULT_SCHEMA, "trino_ltrim", {"s", nullptr}, {{nullptr, nullptr}}, "ltrim(s, trino__java_whitespace_chars())"},
-    {DEFAULT_SCHEMA, "trino_rtrim", {"s", nullptr}, {{nullptr, nullptr}}, "rtrim(s, trino__java_whitespace_chars())"},
+    // trim family is implemented natively in src/string_functions.cpp via
+    // ICU's u_isWhitespace (Java-aligned Character.isWhitespace set including
+    // U+1680, the U+2000-U+200A range minus U+2007, U+2028/U+2029, U+205F,
+    // U+3000; explicitly NOT NBSP/FIGURE/NARROW). trino_normalize{/1,/2} is
+    // also native (Normalizer2 instances). All four show up in trino_meta()
+    // below alongside the macro-backed entries — pushable is pushable, the
+    // implementation surface is an internal detail.
 
     // substring — 1-based code-point indexing, aligned in both engines for positive args.
     {DEFAULT_SCHEMA, "trino_substring", {"s", "start", nullptr},          {{nullptr, nullptr}}, "substring(s, start)"},
@@ -283,6 +270,8 @@ SELECT * FROM (
         ('translate',             3, 'string'),
         ('chr',                   1, 'string'),
         ('bit_length',            1, 'string'),
+        ('normalize',             1, 'string'),
+        ('normalize',             2, 'string'),
         ('regexp_like',           2, 'regex'),
         ('regexp_extract',        2, 'regex'),
         ('regexp_extract',        3, 'regex'),
