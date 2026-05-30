@@ -1,8 +1,5 @@
 # name: test/sql/trino_parity.test
-# description: trino_lower / trino_upper / trino_reverse — parity with Trino on
-#              Unicode inputs where DuckDB's built-ins diverge. Corpus drawn
-#              from REPORT-string-unicode-audit.md in the parent connector
-#              repo.
+# description: Parity with Trino on Unicode + edge-case inputs where DuckDB's built-ins diverge. Covers native trino_lower / upper / reverse / trim family / normalize, ~80 macro renames, and the trino_meta() catalog.
 # group: [sql]
 
 # Before LOAD: functions don't exist.
