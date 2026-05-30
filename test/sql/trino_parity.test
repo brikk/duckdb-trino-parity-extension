@@ -1,0 +1,23 @@
+# name: test/sql/trino_parity.test
+# description: test trino_parity extension
+# group: [sql]
+
+# Before we load the extension, this will fail
+statement error
+SELECT trino_parity('Sam');
+----
+Catalog Error: Scalar Function with name trino_parity does not exist!
+
+# Require statement will ensure this test is run with this extension loaded
+require trino_parity
+
+# Confirm the extension works
+query I
+SELECT trino_parity('Sam');
+----
+...........🦆 Sam
+
+query I
+SELECT trino_parity_openssl_version('Michael') ILIKE 'TrinoParity Michael, my linked OpenSSL version is OpenSSL%';
+----
+true
