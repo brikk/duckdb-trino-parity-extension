@@ -1,102 +1,176 @@
-# Quack
+# trino_parity — DuckDB ↔ Trino function parity
 
-This repository is based on https://github.com/duckdb/extension-template, check it out if you want to build and ship your own DuckDB extension.
+A DuckDB extension that registers `trino_<name>(...)` scalar functions whose
+semantics match Trino's documented behaviour, even on Unicode and other
+edge-case inputs where DuckDB's built-ins diverge.
 
----
+Designed to be loaded server-side by anything that pushes Trino-shaped
+predicates down to DuckDB. The first consumer is
+[ducklake-integrations / trino-ducklake](https://github.com/brikk/ducklake-integrations);
+a future trino-duckdb (direct) connector will load it the same way.
 
-This extension, Quack, allow you to ... <extension_goal>.
+## Why this exists
 
+Trino implements `lower()`, `upper()`, `reverse()`, regex semantics, etc. in
+terms of Java's Unicode 15 tables. DuckDB has its own implementations that
+agree on ASCII but disagree on real-world Unicode input. If a Trino connector
+naively pushes `WHERE lower(name) = 'apple'` down to DuckDB, the filter runs
+with different semantics in each engine — and rows visible to Trino can
+silently disappear from the result.
+
+This extension is the **interpretation layer**: the Trino connector emits
+`trino_<name>(...)` calls instead of bare Trino built-ins, and each `trino_*`
+in this extension resolves to either a native C++ implementation (when DuckDB's
+built-in diverges) or a thin macro over the equivalent DuckDB built-in (when
+they agree). The catalog table macro `trino_meta()` is the authoritative list
+the connector reads to decide what's pushable.
+
+### Concrete divergences pinned today
+
+| Function | DuckDB built-in | Trino spec | Extension result |
+|---|---|---|---|
+| `lower('İ')` (U+0130) | `'i'` (1 cp, simple case folding) | `'i'` + U+0307 (2 cp, full case folding) | matches Trino |
+| `upper('ß')` (U+00DF) | `'ẞ'` (U+1E9E, 1 cp) | `'SS'` (2 cp) | matches Trino |
+| `upper('straße strauß')` | `'STRAẞE STRAUẞ'` | `'STRASSE STRAUSS'` | matches Trino |
+| `reverse('cafe' + U+0301)` | grapheme-aware (combining mark stays glued to `e`) | code-point-only (mark moves to front) | matches Trino |
+| `reverse('👨‍👩‍👧')` (ZWJ family) | unchanged (one cluster) | reversed across ZWJ boundaries | matches Trino |
+| `regexp_replace(s, p, r)` | first match only | global by default | macro forces `'g'` flag |
+| `day_of_week(d)` | `dayofweek` = 0..6 with Sun=0 | ISO 1..7 with Mon=1 | macro uses `isodow` |
+
+The full divergence catalog and its empirical-verification corpus live in
+[`REPORT-string-unicode-audit.md`](https://github.com/brikk/ducklake-integrations/blob/main/jvm/trino-ducklake/dev-docs/REPORT-string-unicode-audit.md)
+on the parent connector repo.
+
+## Function inventory
+
+`trino_meta()` is the source of truth — 91 entries across 8 categories. A
+representative slice (see [`src/trino_function_aliases.sql`](src/trino_function_aliases.sql)
+for the full list):
+
+| Category | Functions |
+|---|---|
+| String (native, ICU) | `trino_lower/1`, `trino_upper/1`, `trino_reverse/1` |
+| String (macro) | `trino_length/1`, `trino_substring/{2,3}`, `trino_trim/1`, `trino_ltrim/1`, `trino_rtrim/1`, `trino_replace/3`, `trino_strpos/2`, `trino_starts_with/2`, `trino_lpad/3`, `trino_rpad/3`, `trino_concat_ws/{2..5}`, `trino_translate/3`, `trino_chr/1`, `trino_bit_length/1` |
+| Numeric | `trino_abs`, `trino_ceil`, `trino_floor`, `trino_mod`, `trino_power`, `trino_sqrt`, `trino_exp`, `trino_ln`, `trino_log2`, `trino_log10`, `trino_sign`, `trino_pi/0`, `trino_truncate`, `trino_sin/cos/tan/asin/acos/atan/atan2`, `trino_sinh/cosh/tanh`, `trino_degrees/radians`, `trino_cbrt` |
+| Bitwise | `trino_bitwise_and/or/not/xor`, `trino_bitwise_left_shift`, `trino_bitwise_right_shift` |
+| Regex (RE2 on both sides) | `trino_regexp_like/2`, `trino_regexp_extract/{2,3}`, `trino_regexp_replace/{2,3}` |
+| Encoding | `trino_url_encode/decode`, `trino_to_hex` / `trino_from_hex`, `trino_to_base64` / `trino_from_base64` |
+| Distance | `trino_levenshtein_distance/2`, `trino_hamming_distance/2` |
+| Hash (VARBINARY-wrapped) | `trino_md5`, `trino_sha1`, `trino_sha256` |
+| Date | `trino_year/month/day/quarter`, `trino_date_trunc/2`, `trino_date_diff/3`, `trino_day_of_week/year`, `trino_last_day_of_month`, `trino_week/week_of_year`, `trino_year_of_week`, `trino_yow`, `trino_hour/minute/second/millisecond`, `trino_to_unixtime`, `trino_from_unixtime`, `trino_with_timezone` |
+| Conditional | `trino_if/{2,3}` |
+
+`trino_with_timezone` requires DuckDB's bundled `icu` extension for `timezone()`;
+the load sequence does `INSTALL icu; LOAD icu;` best-effort, so a sandboxed env
+without that extension installs fine and only fails if `trino_with_timezone` is
+actually called.
+
+## Installation
+
+```sql
+INSTALL trino_parity FROM '<repository-url-or-local-build-path>';
+LOAD trino_parity;
+
+SELECT trino_lower('İSTANBUL');
+-- 'i' + U+0307 + 'stanbul' — matches Trino, not DuckDB's bare lower()
+
+SELECT * FROM trino_meta();
+-- 91 rows: name, arity, category
+```
+
+Until this extension is published to the
+[community-extensions](https://github.com/duckdb/community-extensions) catalog,
+loading happens via direct path:
+
+```sql
+LOAD '/absolute/path/to/trino_parity.duckdb_extension';
+```
+
+with `allow_unsigned_extensions=true` set at DuckDB startup.
 
 ## Building
-### Managing dependencies
-DuckDB extensions uses VCPKG for dependency management. Enabling VCPKG is very simple: follow the [installation instructions](https://vcpkg.io/en/getting-started) or just run the following:
-```shell
-git clone https://github.com/Microsoft/vcpkg.git
-./vcpkg/bootstrap-vcpkg.sh
-export VCPKG_TOOLCHAIN_PATH=`pwd`/vcpkg/scripts/buildsystems/vcpkg.cmake
-```
-Note: VCPKG is only required for extensions that want to rely on it for dependency management. If you want to develop an extension without dependencies, or want to do your own dependency management, just skip this step. Note that the example extension uses VCPKG to build with a dependency for instructive purposes, so when skipping this step the build may not work without removing the dependency.
 
-### Build steps
-Now to build the extension, run:
-```sh
-make
-```
-The main binaries that will be built are:
-```sh
-./build/release/duckdb
-./build/release/test/unittest
-./build/release/extension/quack/quack.duckdb_extension
-```
-- `duckdb` is the binary for the duckdb shell with the extension code automatically loaded.
-- `unittest` is the test runner of duckdb. Again, the extension is already linked into the binary.
-- `quack.duckdb_extension` is the loadable binary as it would be distributed.
+Requires ninja, ccache, and vcpkg (template-pinned commit). One-time bootstrap:
 
-## Running the extension
-To run the extension code, simply start the shell with `./build/release/duckdb`.
-
-Now we can use the features from the extension directly in DuckDB. The template contains a single scalar function `quack()` that takes a string arguments and returns a string:
-```
-D select quack('Jane') as result;
-┌───────────────┐
-│    result     │
-│    varchar    │
-├───────────────┤
-│ Quack Jane 🐥 │
-└───────────────┘
+```bash
+brew install ninja ccache
+git clone https://github.com/Microsoft/vcpkg.git ~/vcpkg
+cd ~/vcpkg && git checkout ce613c41372b23b1f51333815feb3edd87ef8a8b
+sh ./scripts/bootstrap.sh -disableMetrics
+export VCPKG_TOOLCHAIN_PATH=$HOME/vcpkg/scripts/buildsystems/vcpkg.cmake
 ```
 
-## Running the tests
-Different tests can be created for DuckDB extensions. The primary way of testing DuckDB extensions should be the SQL tests in `./test/sql`. These SQL tests can be run using:
-```sh
+Build:
+
+```bash
+git clone --recurse-submodules https://github.com/brikk/duckdb-trino-parity-extension.git
+cd duckdb-trino-parity-extension
+GEN=ninja make
+```
+
+First build is ~30 minutes (DuckDB + statically-linked ICU). Subsequent builds
+are seconds with ccache.
+
+Artifacts:
+
+- `build/release/duckdb` — interactive shell with the extension preloaded
+- `build/release/extension/trino_parity/trino_parity.duckdb_extension` — the
+  loadable binary
+- `build/release/test/unittest` — sqllogic test runner
+
+## Testing
+
+```bash
 make test
 ```
 
-### Installing the deployed binaries
-To install your extension binaries from S3, you will need to do two things. Firstly, DuckDB should be launched with the
-`allow_unsigned_extensions` option set to true. How to set this will depend on the client you're using. Some examples:
+50 assertions covering the Unicode divergence fixtures (Turkish İ, German ß,
+decomposed café, ZWJ emoji families, CJK), one spot check per macro category,
+and `trino_meta()` shape pins (row count, distinct categories, multi-arity
+listings).
 
-CLI:
-```shell
-duckdb -unsigned
-```
+The full cross-engine semantic suite lives in the parent connector repo
+([`TestTrinoFunctionAliases`](https://github.com/brikk/ducklake-integrations/tree/main/jvm/trino-ducklake/src))
+and is what catches drift between the macros here and Trino's documented
+behaviour.
 
-Python:
-```python
-con = duckdb.connect(':memory:', config={'allow_unsigned_extensions' : 'true'})
-```
+## Architecture
 
-NodeJS:
-```js
-db = new duckdb.Database(':memory:', {"allow_unsigned_extensions": "true"});
-```
+Three source files plus the build-time SQL embed:
 
-Secondly, you will need to set the repository endpoint in DuckDB to the HTTP url of your bucket + version of the extension
-you want to install. To do this run the following SQL query in DuckDB:
-```sql
-SET custom_extension_repository='bucket.s3.eu-west-1.amazonaws.com/<your_extension_name>/latest';
-```
-Note that the `/latest` path will allow you to install the latest extension version available for your current version of
-DuckDB. To specify a specific version, you can pass the version instead.
+- `src/string_functions.cpp` — native C++ scalar functions backed by statically
+  linked ICU. Currently `trino_lower`, `trino_upper`, `trino_reverse`. Future:
+  `trino_normalize/{1,2}` for NFC/NFD/NFKC/NFKD, possibly the trim family.
+- `src/trino_function_aliases.sql` — source of truth for the macro layer.
+  Edit this file; the build pipeline embeds it via CMake `configure_file`
+  into a generated `.cpp` that defines `kTrinoAliasSql` as a raw string.
+- `src/alias_macros_loader.cpp` — runs the embedded SQL at `LoadInternal`
+  time. Statements are split on top-level semicolons by a small state machine
+  that handles `--` line comments and single-quoted literals. `INSTALL` /
+  `LOAD` statements are treated as best-effort (Printer::Warning on failure,
+  continue); all other failures propagate as `IOException` and abort the
+  extension load.
+- `src/trino_parity_extension.cpp` — entry point. Registers the native
+  functions first, then runs the alias SQL.
 
-After running these steps, you can install and load your extension using the regular INSTALL/LOAD commands in DuckDB:
-```sql
-INSTALL quack;
-LOAD quack;
-```
+ICU is statically linked via vcpkg (ICU 74 components: `uc`, `i18n`, `data`).
+This adds ~30MB to the loadable extension binary; the trade-off buys
+deterministic Unicode behaviour independent of the host DuckDB build.
 
-## Setting up CLion
+## Future work
 
-### Opening project
-Configuring CLion with this extension requires a little work. Firstly, make sure that the DuckDB submodule is available.
-Then make sure to open `./duckdb/CMakeLists.txt` (so not the top level `CMakeLists.txt` file from this repo) as a project in CLion.
-Now to fix your project path go to `tools->CMake->Change Project Root`([docs](https://www.jetbrains.com/help/clion/change-project-root-directory.html)) to set the project root to the root dir of this repo.
+See [`TODO.md`](TODO.md). Highlights:
 
-### Debugging
-To set up debugging in CLion, there are two simple steps required. Firstly, in `CLion -> Settings / Preferences -> Build, Execution, Deploy -> CMake` you will need to add the desired builds (e.g. Debug, Release, RelDebug, etc). There's different ways to configure this, but the easiest is to leave all empty, except the `build path`, which needs to be set to `../build/{build type}`, and CMake Options to which the following flag should be added, with the path to the extension CMakeList:
+- Migrate macros from `Connection::Query` to DuckDB's native `DefaultMacro[]` +
+  `DefaultFunctionGenerator::CreateInternalMacroInfo()` helper. This is the
+  more idiomatic pattern used by extensions like Query-farm's
+  [clickhouse-sql](https://github.com/Query-farm/clickhouse-sql); equivalent
+  output, skips the SQL parse loop at load.
+- Add `trino_normalize/{1,2}` (NFC/NFD/NFKC/NFKD) — DuckDB only ships `nfc_normalize`.
+- Promote `trino_trim`/`ltrim`/`rtrim` from macros (which hand-roll the Java
+  `Character.isWhitespace` set as a character argument) to native C++ for
+  efficiency and to avoid drift if Java's whitespace set ever changes.
 
-```
--DDUCKDB_EXTENSION_CONFIGS=<path_to_the_exentension_CMakeLists.txt>
-```
+## License
 
-The second step is to configure the unittest runner as a run/debug configuration. To do this, go to `Run -> Edit Configurations` and click `+ -> Cmake Application`. The target and executable should be `unittest`. This will run all the DuckDB tests. To specify only running the extension specific tests, add `--test-dir ../../.. [sql]` to the `Program Arguments`. Note that it is recommended to use the `unittest` executable for testing/development within CLion. The actual DuckDB CLI currently does not reliably work as a run target in CLion.
+MIT, matching the upstream DuckDB extension template.

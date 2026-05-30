@@ -2,11 +2,13 @@
 
 #include "duckdb.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/printer.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 
+#include <cctype>
 #include <string>
 #include <vector>
 
@@ -73,6 +75,39 @@ std::vector<std::string> SplitStatements(const char *sql) {
 	return out;
 }
 
+// Return the first SQL keyword in stmt (after skipping leading whitespace and
+// -- line comments), uppercased. Empty string if the statement is comment-only.
+std::string FirstKeyword(const std::string &stmt) {
+	size_t i = 0;
+	while (i < stmt.size()) {
+		const char c = stmt[i];
+		if (std::isspace(static_cast<unsigned char>(c))) {
+			++i;
+		} else if (c == '-' && i + 1 < stmt.size() && stmt[i + 1] == '-') {
+			while (i < stmt.size() && stmt[i] != '\n') {
+				++i;
+			}
+		} else {
+			break;
+		}
+	}
+	std::string out;
+	while (i < stmt.size() && std::isalpha(static_cast<unsigned char>(stmt[i]))) {
+		out.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(stmt[i]))));
+		++i;
+	}
+	return out;
+}
+
+// INSTALL / LOAD <other-extension> are nice-to-have: ICU is wanted so that
+// trino_with_timezone's underlying timezone(zone, ts) function resolves, but
+// sandboxed test environments may have no network and no on-disk extension
+// cache. Log and continue instead of failing the entire extension load.
+bool IsBestEffort(const std::string &stmt) {
+	const auto kw = FirstKeyword(stmt);
+	return kw == "INSTALL" || kw == "LOAD";
+}
+
 } // namespace
 
 void RegisterAliasMacros(ExtensionLoader &loader) {
@@ -82,15 +117,22 @@ void RegisterAliasMacros(ExtensionLoader &loader) {
 	const auto statements = SplitStatements(kTrinoAliasSql);
 	for (const auto &stmt : statements) {
 		auto result = con.Query(stmt);
-		if (result->HasError()) {
-			// Truncate the offending SQL for log-readability; full statement is
-			// in the build output if anyone needs to dig deeper.
-			const auto snippet = stmt.size() > 200 ? stmt.substr(0, 200) + "..." : stmt;
-			throw IOException("trino_parity: alias-macro registration failed.\n"
-			                  "  SQL: %s\n"
-			                  "  Error: %s",
-			                  snippet, result->GetError());
+		if (!result->HasError()) {
+			continue;
 		}
+		// Truncate the offending SQL for log-readability; full statement is
+		// in the build output if anyone needs to dig deeper.
+		const auto snippet = stmt.size() > 200 ? stmt.substr(0, 200) + "..." : stmt;
+		if (IsBestEffort(stmt)) {
+			Printer::PrintF(
+			    "[trino_parity] best-effort statement failed, continuing.\n  SQL: %s\n  Error: %s\n",
+			    snippet, result->GetError());
+			continue;
+		}
+		throw IOException("trino_parity: alias-macro registration failed.\n"
+		                  "  SQL: %s\n"
+		                  "  Error: %s",
+		                  snippet, result->GetError());
 	}
 }
 

@@ -12,12 +12,23 @@
 -- edge cases) go here so they can be corrected without rebuilding the Trino
 -- plugin.
 --
--- ICU is statically linked into this extension (vcpkg ICU 74); we do NOT
--- INSTALL/LOAD DuckDB's bundled icu extension. The full-case-folding
--- functions trino_lower / trino_upper and the code-point reverse
--- trino_reverse are NOT macros — they are native C++ scalar functions
--- registered in src/string_functions.cpp. They intentionally do not appear
--- below; trino_meta() does still list them because they remain pushable.
+-- The full-case-folding functions trino_lower / trino_upper and the
+-- code-point reverse trino_reverse are NOT macros — they are native C++
+-- scalar functions registered in src/string_functions.cpp via vcpkg's
+-- statically-linked ICU. They intentionally do not appear below;
+-- trino_meta() does still list them because they remain pushable.
+--
+-- Two ICU-related concerns coexist here:
+--   (a) ICU case folding / code-point reverse — handled by the statically
+--       linked ICU inside this extension. No INSTALL/LOAD needed.
+--   (b) DuckDB's `timezone(zone, ts)` function used by trino_with_timezone
+--       and its timezone-name table — lives in DuckDB's bundled `icu`
+--       extension, separate from our static link. We INSTALL/LOAD it
+--       best-effort below; if the install fails (sandboxed env, no
+--       network, no on-disk cache) the loader logs and continues, and
+--       trino_with_timezone fails only if actually called.
+INSTALL icu;
+LOAD icu;
 
 -- ---- String functions ----
 
