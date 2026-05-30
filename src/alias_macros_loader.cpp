@@ -24,12 +24,10 @@ namespace {
 void RegisterScalarMacros(ExtensionLoader &loader, const DefaultMacro *macros) {
 	for (idx_t i = 0; macros[i].name != nullptr;) {
 		idx_t count = 1;
-		while (macros[i + count].name != nullptr &&
-		       std::strcmp(macros[i].name, macros[i + count].name) == 0) {
+		while (macros[i + count].name != nullptr && std::strcmp(macros[i].name, macros[i + count].name) == 0) {
 			++count;
 		}
-		auto info = DefaultFunctionGenerator::CreateInternalMacroInfo(
-		    array_ptr<const DefaultMacro>(macros + i, count));
+		auto info = DefaultFunctionGenerator::CreateInternalMacroInfo(array_ptr<const DefaultMacro>(macros + i, count));
 		loader.RegisterFunction(*info);
 		i += count;
 	}
@@ -51,14 +49,12 @@ void EnsureIcu(DatabaseInstance &db) {
 	Connection con(db);
 	auto install = con.Query("INSTALL icu");
 	if (install->HasError()) {
-		Printer::PrintF("[trino_parity] INSTALL icu failed, continuing without it — %s\n",
-		                install->GetError());
+		Printer::PrintF("[trino_parity] INSTALL icu failed, continuing without it — %s\n", install->GetError());
 		return;
 	}
 	auto load = con.Query("LOAD icu");
 	if (load->HasError()) {
-		Printer::PrintF("[trino_parity] LOAD icu failed, continuing without it — %s\n",
-		                load->GetError());
+		Printer::PrintF("[trino_parity] LOAD icu failed, continuing without it — %s\n", load->GetError());
 	}
 }
 

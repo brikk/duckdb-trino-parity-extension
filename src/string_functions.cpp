@@ -86,10 +86,8 @@ void TrinoReverseFun(DataChunk &args, ExpressionState &state, Vector &result) {
 } // namespace
 
 void RegisterStringFunctions(ExtensionLoader &loader) {
-	loader.RegisterFunction(
-	    ScalarFunction("trino_lower", {LogicalType::VARCHAR}, LogicalType::VARCHAR, TrinoLowerFun));
-	loader.RegisterFunction(
-	    ScalarFunction("trino_upper", {LogicalType::VARCHAR}, LogicalType::VARCHAR, TrinoUpperFun));
+	loader.RegisterFunction(ScalarFunction("trino_lower", {LogicalType::VARCHAR}, LogicalType::VARCHAR, TrinoLowerFun));
+	loader.RegisterFunction(ScalarFunction("trino_upper", {LogicalType::VARCHAR}, LogicalType::VARCHAR, TrinoUpperFun));
 	loader.RegisterFunction(
 	    ScalarFunction("trino_reverse", {LogicalType::VARCHAR}, LogicalType::VARCHAR, TrinoReverseFun));
 }
