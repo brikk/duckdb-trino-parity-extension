@@ -2,6 +2,7 @@
 
 #include "trino_parity_extension.hpp"
 #include "string_functions.hpp"
+#include "trino_alias_sql.hpp"
 
 #include "duckdb.hpp"
 #include "duckdb/common/exception.hpp"
@@ -10,7 +11,13 @@
 namespace duckdb {
 
 static void LoadInternal(ExtensionLoader &loader) {
+	// Native ICU-backed functions first (lower / upper / reverse), so they
+	// already exist as catalog entries when the alias SQL runs and any future
+	// macros that try to overwrite them get a clear conflict error.
 	RegisterStringFunctions(loader);
+	// SQL alias macros (trino_length, trino_substring, ..., trino_meta).
+	// Sourced from src/trino_function_aliases.sql, embedded at build time.
+	RegisterAliasMacros(loader);
 }
 
 void TrinoParityExtension::Load(ExtensionLoader &loader) {

@@ -184,3 +184,148 @@ query I
 SELECT encode(trino_upper(trino_lower(chr(304)))) = '\x49\xCC\x87'::BLOB;
 ----
 true
+
+# =============================================================================
+# SQL alias macros + trino_meta()
+#
+# The extension also loads src/trino_function_aliases.sql at LOAD time, which
+# registers ~60 trino_<name> macros (length / substring / abs / regexp_like / …)
+# and the trino_meta() table macro that catalogs every pushable name+arity.
+# One spot check per category — the macros are thin renames over DuckDB
+# built-ins, so we're verifying registration succeeded, not the underlying
+# semantics. Trino-vs-DuckDB semantic divergences (e.g. concat NULL handling,
+# trim whitespace set) are pinned in the parent connector's
+# TestTrinoFunctionAliases cross-engine harness, not here.
+# =============================================================================
+
+# string
+query I
+SELECT trino_length('hello');
+----
+5
+
+query I
+SELECT trino_strpos('foobar', 'bar');
+----
+4
+
+query I
+SELECT trino_concat_ws('-', 'a', 'b', 'c');
+----
+a-b-c
+
+# numeric
+query I
+SELECT trino_abs(-7);
+----
+7
+
+query I
+SELECT trino_pi() > 3.14 AND trino_pi() < 3.15;
+----
+true
+
+query I
+SELECT trino_bitwise_and(12, 10);
+----
+8
+
+# regex
+query I
+SELECT trino_regexp_like('hello world', 'w(o|0)rld');
+----
+true
+
+# Trino's regexp_replace replaces ALL matches by default. The macro forces 'g'
+# so a non-anchored pattern strips every occurrence, not just the first.
+query I
+SELECT trino_regexp_replace('aaa', 'a', 'b');
+----
+bbb
+
+# encoding
+query I
+SELECT trino_to_hex('A'::BLOB);
+----
+41
+
+query I
+SELECT trino_url_encode('a b');
+----
+a%20b
+
+# distance
+query I
+SELECT trino_levenshtein_distance('kitten', 'sitting');
+----
+3
+
+# hash — Trino returns VARBINARY; macros wrap unhex(...) so the macro return
+# IS a BLOB. md5 of empty input is the standard d41d8cd98f00b204e9800998ecf8427e.
+query I
+SELECT hex(trino_md5(''::BLOB));
+----
+D41D8CD98F00B204E9800998ECF8427E
+
+# date
+query I
+SELECT trino_year(DATE '2024-12-30');
+----
+2024
+
+# day_of_week: Trino is ISO (Mon=1, Sun=7), NOT DuckDB's default dayofweek
+# (Sun=0). The macro uses isodow.
+query I
+SELECT trino_day_of_week(DATE '2024-01-07');
+----
+7
+
+# conditional
+query I
+SELECT trino_if(true, 'yes', 'no');
+----
+yes
+
+query I
+SELECT trino_if(false, 'yes');
+----
+NULL
+
+# -----------------------------------------------------------------------------
+# trino_meta() — authoritative catalog of pushable (name, arity) entries.
+# -----------------------------------------------------------------------------
+
+# Total row count is the contract with the Java-side PUSHABLE_FUNCTIONS parity
+# test (testJavaPushableSetMatchesDuckDbMeta). If this number changes the
+# parent connector's test will fail until the Java set is updated too. Bump
+# both sides in the same change.
+query I
+SELECT count(*) FROM trino_meta();
+----
+91
+
+# Row shape: three columns, expected types.
+query III
+SELECT trino_name, arg_count, category FROM trino_meta() WHERE trino_name = 'length' AND arg_count = 1;
+----
+length	1	string
+
+# Native-backed functions still appear in trino_meta — they're pushable, they
+# just happen to be implemented in C++ rather than as macros.
+query I
+SELECT count(*) FROM trino_meta() WHERE trino_name IN ('lower', 'upper', 'reverse');
+----
+3
+
+# Multi-arity functions: substring has both 2- and 3-arg overloads listed.
+query I
+SELECT count(*) FROM trino_meta() WHERE trino_name = 'substring';
+----
+2
+
+# All categories present (string, numeric, regex, encoding, distance, hash,
+# date, conditional — 8 total).
+query I
+SELECT count(DISTINCT category) FROM trino_meta();
+----
+8

@@ -18,9 +18,23 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include_directories(src/include)
 
+# Embed src/trino_function_aliases.sql as a C string in the build output. The
+# SQL is the source-of-truth for the trino_<name> macros and the trino_meta()
+# table macro; CMake reads it at configure time and writes a generated .cpp
+# that defines kTrinoAliasSql. Edit the .sql file (with SQL syntax highlighting
+# in your editor), not the generated .cpp.
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/trino_function_aliases.sql"
+     SQL_CONTENTS)
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/alias_macros.cpp.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/alias_macros.cpp"
+    @ONLY)
+
 set(EXTENSION_SOURCES
     src/trino_parity_extension.cpp
-    src/string_functions.cpp)
+    src/string_functions.cpp
+    src/alias_macros_loader.cpp
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/alias_macros.cpp")
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
