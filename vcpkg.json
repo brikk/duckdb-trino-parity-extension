@@ -1,0 +1,6 @@
+{
+  "name": "trino-parity",
+  "version": "0.1.0",
+  "description": "Intentionally empty manifest. The extension vendors its own ICU under third_party/icu and links no other vcpkg packages. This file exists only because the upstream extension CI workflow forces -DCMAKE_TOOLCHAIN_FILE=.../vcpkg.cmake -DVCPKG_BUILD=1, and vcpkg's manifest-mode toolchain aborts configure if it can't find a vcpkg.json. With dependencies: [], vcpkg install is a no-op and configure proceeds to the actual build. Local builds bypass vcpkg entirely (docker/build-in-container.sh unsets VCPKG_TOOLCHAIN_PATH).",
+  "dependencies": []
+}
