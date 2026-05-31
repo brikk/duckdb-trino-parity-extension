@@ -43,7 +43,7 @@ on the parent connector repo.
 
 ## Function inventory
 
-`trino_meta()` is the source of truth — 93 entries across 8 categories. A
+`trino_meta()` is the source of truth — 92 entries across 8 categories. A
 representative slice (full list lives in
 [`src/macro_definitions.cpp`](src/macro_definitions.cpp) under
 `kTrinoMacros[]` + `kTrinoTableMacros[]`):
@@ -72,9 +72,11 @@ Java's Unicode semantics exactly:
 - `trino_trim` / `trino_ltrim` / `trino_rtrim`: skip code points where
   `u_isWhitespace` is true (Java's `Character.isWhitespace` — NBSP /
   U+2007 / U+202F intentionally NOT stripped).
-- `trino_normalize/{1,2}`: `icu::Normalizer2::getNF{C,D,KC,KD}Instance`,
-  with `'NFC'` / `'NFD'` / `'NFKC'` / `'NFKD'` accepted case-insensitively;
-  1-arg defaults to NFC.
+- `trino_normalize/1`: `icu::Normalizer2::getNFCInstance()` — vendored
+  ICU ships only NFC's static data, so this is the only form registered.
+  The 2-arg form (`'NFC'` / `'NFD'` / `'NFKC'` / `'NFKD'` selector) was
+  pruned with the vendored-ICU migration; the connector's pushable set
+  matches.
 
 `trino_with_timezone` requires DuckDB's bundled `icu` extension for
 `timezone()`; the load sequence does `INSTALL icu; LOAD icu;` best-effort,
@@ -91,7 +93,7 @@ SELECT trino_lower('İSTANBUL');
 -- 'i' + U+0307 + 'stanbul' — matches Trino, not DuckDB's bare lower()
 
 SELECT * FROM trino_meta();
--- 91 rows: name, arity, category
+-- 92 rows: name, arity, category
 ```
 
 Until this extension is published to the
@@ -106,14 +108,11 @@ with `allow_unsigned_extensions=true` set at DuckDB startup.
 
 ## Building
 
-Requires ninja, ccache, and vcpkg (template-pinned commit). One-time bootstrap:
+Requires ninja and ccache. ICU is vendored under `third_party/icu/` — no
+vcpkg needed for local builds. One-time bootstrap on macOS:
 
 ```bash
 brew install ninja ccache
-git clone https://github.com/Microsoft/vcpkg.git ~/vcpkg
-cd ~/vcpkg && git checkout ce613c41372b23b1f51333815feb3edd87ef8a8b
-sh ./scripts/bootstrap.sh -disableMetrics
-export VCPKG_TOOLCHAIN_PATH=$HOME/vcpkg/scripts/buildsystems/vcpkg.cmake
 ```
 
 Build:
@@ -124,8 +123,13 @@ cd duckdb-trino-parity-extension
 GEN=ninja make
 ```
 
-First build is ~30 minutes (DuckDB + statically-linked ICU). Subsequent builds
-are seconds with ccache.
+First build is ~30 minutes (DuckDB + the vendored ICU snapshot). Subsequent
+builds are seconds with ccache.
+
+> An empty `vcpkg.json` is checked in only so the upstream extension-CI
+> workflow's vcpkg manifest-mode toolchain doesn't abort configure on CI.
+> Local builds bypass vcpkg entirely (`docker/build-in-container.sh`
+> unsets `VCPKG_TOOLCHAIN_PATH`).
 
 Artifacts:
 
@@ -161,7 +165,9 @@ builds fast. See `docker/Dockerfile.linux-build` and
 
 ### Fetching CI-built binaries (no local build)
 
-GitHub Actions builds the cross-platform matrix on every push to `main`. To pull
+GitHub Actions builds the full cross-platform matrix on every push to `main` —
+Linux (amd64/arm64), MacOS (amd64/arm64), Windows (amd64 MSVC + MinGW), and
+DuckDB-Wasm (mvp/eh/threads), plus Format + Tidy code-quality checks. To pull
 the latest successful run's binaries instead of building locally:
 
 ```bash
@@ -181,10 +187,11 @@ without any further configuration.
 make test
 ```
 
-50 assertions covering the Unicode divergence fixtures (Turkish İ, German ß,
-decomposed café, ZWJ emoji families, CJK), one spot check per macro category,
-and `trino_meta()` shape pins (row count, distinct categories, multi-arity
-listings).
+68 sqllogic assertions covering the Unicode divergence fixtures (Turkish İ,
+German ß, decomposed café, ZWJ emoji families, CJK), the trim whitespace set
+(Java vs. ICU coverage), NFC normalization, one spot check per macro
+category, and `trino_meta()` shape pins (row count, distinct categories,
+multi-arity listings).
 
 The full cross-engine semantic suite lives in the parent connector repo
 ([`TestTrinoFunctionAliases`](https://github.com/brikk/ducklake-integrations/tree/main/jvm/trino-ducklake/src))
@@ -196,7 +203,7 @@ behaviour.
 Four source files:
 
 - `src/string_functions.cpp` — native C++ scalar functions backed by
-  statically linked ICU: `trino_lower`, `trino_upper`, `trino_reverse`,
+  the statically-linked vendored ICU: `trino_lower`, `trino_upper`, `trino_reverse`,
   `trino_trim`, `trino_ltrim`, `trino_rtrim`, `trino_normalize/{1,2}`.
   These are the places where DuckDB's built-ins diverge from Trino on
   real-world Unicode input; rewriting in C++ via ICU pins exact Java
@@ -216,18 +223,21 @@ Four source files:
 - `src/trino_parity_extension.cpp` — entry point. Registers the native
   functions first, then the macros.
 
-ICU is statically linked via vcpkg (ICU 74 components: `uc`, `i18n`, `data`).
-This adds ~30MB to the loadable extension binary; the trade-off buys
-deterministic Unicode behaviour independent of the host DuckDB build.
+ICU is vendored under `third_party/icu/` — a snapshot of DuckDB's bundled
+ICU (`common` + `i18n` + `stubdata`). Statically linked into the loadable
+extension binary (adds ~30MB) so Unicode behaviour is independent of the
+host DuckDB build. The vendored snapshot ships only the NFC normalization
+data; NFD/NFKC/NFKD are intentionally out of scope, and the connector's
+pushable set tracks accordingly.
 
 ## Future work
 
 See [`TODO.md`](TODO.md). Headline items:
 
-- CI build matrix for release artifacts via `MainDistributionPipeline.yml`,
-  unblocking the path to publishing on
-  [community-extensions](https://github.com/duckdb/community-extensions).
-- Consolidate the remaining macro entries that wrap DuckDB built-ins
+- Publishing to the
+  [community-extensions](https://github.com/duckdb/community-extensions)
+  catalog, enabling `INSTALL trino_parity FROM community;` for operators.
+- Consolidating the remaining macro entries that wrap DuckDB built-ins
   (`from_hex` / `unhex` etc.) — clean-up, not correctness.
 
 ## License

@@ -20,44 +20,29 @@ built-ins diverge.
   `DefaultFunctionGenerator::CreateInternalMacroInfo` — no SQL parse loop
   at load time (matches `json` extension and Query-farm's `clickhouse-sql`).
 - ✅ `trino_meta()` table macro as `DefaultTableMacro[]` — authoritative
-  pushable-set catalog (93 entries) the connector mirrors in
+  pushable-set catalog (92 entries) the connector mirrors in
   `DuckDbExpressionTranslator.PUSHABLE_FUNCTIONS`.
 - ✅ ICU best-effort INSTALL/LOAD on extension load so `trino_with_timezone`
   resolves DuckDB's `timezone()`.
+- ✅ Vendored ICU under `third_party/icu/` (copied from DuckDB's bundled
+  `extension/icu/third_party/icu`) — no vcpkg dependency at build time.
+  Trades NFD/NFKC/NFKD pushdown for build-system simplicity; the connector
+  pushes only `normalize/1` (NFC) as a result.
 - ✅ Linux build container (`make linux-arm64`, `make linux-amd64`) for
   cross-platform binaries when developing on macOS.
+- ✅ Full CI build matrix green on every push — `MainDistributionPipeline.yml`
+  calls `extension-ci-tools`' `_extension_distribution.yml` reusable workflow,
+  which builds and signs Linux (amd64/arm64), MacOS (amd64/arm64), Windows
+  (amd64 MSVC + MinGW), and DuckDB-Wasm (mvp/eh/threads) on every push to
+  `main`. Plus Format + Tidy checks. Artifacts are downloadable per-run
+  via `scripts/fetch-from-ci-artifacts.sh`.
 - ✅ CI-artifact fallback script
   ([`scripts/fetch-from-ci-artifacts.sh`](scripts/fetch-from-ci-artifacts.sh))
   for pulling platform builds without running the local container.
 
 ## Open
 
-### 1. CI build matrix for releases
-
-The upstream extension template ships `MainDistributionPipeline.yml` which
-calls `extension-ci-tools`' `_extension_distribution.yml` reusable workflow.
-That builds and signs binaries for every standard DuckDB platform
-(linux-amd64, linux-arm64, osx-arm64, osx-amd64, windows-amd64) and uploads
-them as workflow artifacts.
-
-Local-dev story works today (Docker build container + per-platform gradle
-bundling + the fetch-from-CI script). For releases we want:
-
-- Stable artifact naming so consumers can pin tags.
-- Tag-triggered job that also publishes a community-extensions catalog entry
-  (see item 2).
-- The trino-ducklake plugin jar in CI consumes the freshly-built binaries
-  via the same `build/<platform>/release/extension/trino_parity/`
-  layout the local Docker targets produce.
-
-Known CI failure mode to chase: an earlier run hit a `multiple definition
-of duckdb::BufferedFileWriter::DEFAULT_OPEN_FLAGS` link error in DuckDB's
-own `tools/plan_serializer` under `gcc-toolset-14` on Linux. If it
-recurs after the current code passes format/tidy, we can either bump the
-DuckDB submodule past v1.5.3 or disable that tool target from the
-extension's CMake.
-
-### 2. Publish to DuckDB community-extensions
+### 1. Publish to DuckDB community-extensions
 
 Path to `INSTALL trino_parity FROM community; LOAD trino_parity;` —
 zero-binary-management for operators.
@@ -71,7 +56,7 @@ zero-binary-management for operators.
 - The connector then drops the bundled binaries in favour of `INSTALL ...
   FROM community` at attach time. No more 36MB-per-platform in the plugin jar.
 
-### 3. Migrate `from_hex` / `unhex` rounds + remaining macros
+### 2. Migrate `from_hex` / `unhex` rounds + remaining macros
 
 Some round-6 entries are still SQL macros (`trino_from_hex` calls DuckDB's
 `unhex`; multi-arg overload macros are stacked). Consolidate into single
