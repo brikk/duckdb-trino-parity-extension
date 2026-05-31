@@ -52,7 +52,11 @@ if [[ ! -f extension-ci-tools/makefiles/duckdb_extension.Makefile ]]; then
     exit 2
 fi
 
-# Build with ninja + ccache. VCPKG_TOOLCHAIN_PATH is baked into the image's env.
+# Build with ninja + ccache. The extension uses a vendored ICU snapshot
+# (no vcpkg dep), so unset the image's VCPKG_TOOLCHAIN_PATH — otherwise the
+# extension Makefile injects -DCMAKE_TOOLCHAIN_FILE=... and CMake then
+# requires a vcpkg.json that we no longer ship.
+unset VCPKG_TOOLCHAIN_PATH
 # Cap parallelism so Docker Desktop's default memory cap (often 8 GB) doesn't
 # OOM-kill cc1plus during the DuckDB compilation — each heavy template can
 # eat ~1.5 GB resident at -O3. Override with -e BUILD_PARALLELISM=N on

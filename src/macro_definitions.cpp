@@ -270,8 +270,10 @@ SELECT * FROM (
         ('translate',             3, 'string'),
         ('chr',                   1, 'string'),
         ('bit_length',            1, 'string'),
+        -- normalize/2 (with form arg) is NOT pushable: the vendored ICU only
+        -- ships NFC normalization data, so NFD/NFKC/NFKD aren't supported
+        -- by the native function. Trino evaluates the 2-arg form above-the-scan.
         ('normalize',             1, 'string'),
-        ('normalize',             2, 'string'),
         ('regexp_like',           2, 'regex'),
         ('regexp_extract',        2, 'regex'),
         ('regexp_extract',        3, 'regex'),

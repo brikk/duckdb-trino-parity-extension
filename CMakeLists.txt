@@ -2,11 +2,21 @@ cmake_minimum_required(VERSION 3.5)
 
 set(TARGET_NAME trino_parity)
 
-# ICU provides the Unicode case-folding and UTF-8 iteration primitives used
-# by trino_lower / trino_upper / trino_reverse. Linked statically via vcpkg
-# so the extension is self-contained at LOAD time. `data` carries the
-# Unicode tables (~30MB); without it the link errors on _icudt<ver>_dat.
-find_package(ICU REQUIRED COMPONENTS uc i18n data)
+# Vendored ICU sources from duckdb/extension/icu/third_party/icu/. We bundle
+# the same minimal-ICU snapshot DuckDB ships in its own bundled `icu`
+# extension: `common` + `i18n` + a stub data module. This avoids the vcpkg
+# dependency entirely (and the build-environment fragility that comes with
+# autotools-based ICU compiling under manylinux + gcc-toolset-14 in CI).
+#
+# Trade-off: stub data means only NFC normalization data is baked in (via
+# norm2_nfc_data.h); NFD/NFKC/NFKD are NOT available. `trino_normalize/2`
+# is intentionally NOT registered as a result — Trino still evaluates the
+# non-NFC forms above-the-scan, just not pushed to DuckDB. trino_lower /
+# trino_upper / trino_reverse / trim family / trino_normalize/1 (NFC)
+# all work fine with the vendored ICU.
+include_directories(third_party/icu/common)
+include_directories(third_party/icu/i18n)
+add_subdirectory(third_party)
 
 set(EXTENSION_NAME ${TARGET_NAME}_extension)
 set(LOADABLE_EXTENSION_NAME ${TARGET_NAME}_loadable_extension)
@@ -27,13 +37,11 @@ set(EXTENSION_SOURCES
     src/trino_parity_extension.cpp
     src/string_functions.cpp
     src/alias_macros_loader.cpp
-    src/macro_definitions.cpp)
+    src/macro_definitions.cpp
+    ${ICU_LIBRARY_FILES})
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
-
-target_link_libraries(${EXTENSION_NAME} ICU::i18n ICU::uc ICU::data)
-target_link_libraries(${LOADABLE_EXTENSION_NAME} ICU::i18n ICU::uc ICU::data)
 
 install(
   TARGETS ${EXTENSION_NAME}

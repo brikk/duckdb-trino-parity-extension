@@ -10,8 +10,6 @@
 #include <unicode/unistr.h>
 #include <unicode/utf8.h>
 
-#include <algorithm>
-#include <cctype>
 #include <cstdint>
 #include <string>
 
@@ -160,29 +158,10 @@ void TrinoRtrimFun(DataChunk &args, ExpressionState &state, Vector &result) {
 }
 
 // Trino's normalize(string[, form]) where form ∈ {NFC, NFD, NFKC, NFKD}.
-// DuckDB only ships nfc_normalize, so the other three forms need ICU.
-// icu::Normalizer2::getNF{C,D,KC,KD}Instance returns process-wide singletons
-// — safe and cheap to fetch per row.
-
-inline const icu::Normalizer2 *NormalizerForForm(const std::string &form_upper) {
-	UErrorCode err = U_ZERO_ERROR;
-	const icu::Normalizer2 *norm;
-	if (form_upper == "NFC") {
-		norm = icu::Normalizer2::getNFCInstance(err);
-	} else if (form_upper == "NFD") {
-		norm = icu::Normalizer2::getNFDInstance(err);
-	} else if (form_upper == "NFKC") {
-		norm = icu::Normalizer2::getNFKCInstance(err);
-	} else if (form_upper == "NFKD") {
-		norm = icu::Normalizer2::getNFKDInstance(err);
-	} else {
-		return nullptr;
-	}
-	if (U_FAILURE(err)) {
-		return nullptr;
-	}
-	return norm;
-}
+// The vendored ICU only bakes in NFC data (norm2_nfc_data.h); NFD / NFKC /
+// NFKD would need additional data tables we haven't shipped. We register
+// only the 1-arg form (NFC by default); the 2-arg form stays unpushable in
+// the connector's translator and Trino evaluates it above-the-scan.
 
 inline std::string NormalizeWith(const icu::Normalizer2 &norm, const char *data, idx_t size) {
 	icu::UnicodeString in = icu::UnicodeString::fromUTF8(icu::StringPiece(data, size));
@@ -210,23 +189,6 @@ void TrinoNormalizeFun(DataChunk &args, ExpressionState &state, Vector &result) 
 	});
 }
 
-// 2-arg form: accepts 'NFC' / 'NFD' / 'NFKC' / 'NFKD' (case-insensitive).
-void TrinoNormalizeFormFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	BinaryExecutor::Execute<string_t, string_t, string_t>(
-	    args.data[0], args.data[1], result, args.size(), [&](string_t s, string_t form) {
-		    std::string form_upper = form.GetString();
-		    std::transform(form_upper.begin(), form_upper.end(), form_upper.begin(),
-		                   [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
-		    const icu::Normalizer2 *norm = NormalizerForForm(form_upper);
-		    if (norm == nullptr) {
-			    throw InvalidInputException(StringUtil::Format(
-			        "trino_normalize: unsupported form '%s' (expected NFC, NFD, NFKC, NFKD)", form.GetString()));
-		    }
-		    std::string out = NormalizeWith(*norm, s.GetData(), s.GetSize());
-		    return StringVector::AddString(result, out);
-	    });
-}
-
 } // namespace
 
 void RegisterStringFunctions(ExtensionLoader &loader) {
@@ -239,8 +201,6 @@ void RegisterStringFunctions(ExtensionLoader &loader) {
 	loader.RegisterFunction(ScalarFunction("trino_rtrim", {LogicalType::VARCHAR}, LogicalType::VARCHAR, TrinoRtrimFun));
 	loader.RegisterFunction(
 	    ScalarFunction("trino_normalize", {LogicalType::VARCHAR}, LogicalType::VARCHAR, TrinoNormalizeFun));
-	loader.RegisterFunction(ScalarFunction("trino_normalize", {LogicalType::VARCHAR, LogicalType::VARCHAR},
-	                                       LogicalType::VARCHAR, TrinoNormalizeFormFun));
 }
 
 } // namespace duckdb

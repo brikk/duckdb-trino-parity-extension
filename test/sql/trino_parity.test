@@ -261,11 +261,12 @@ SELECT trino_trim(NULL);
 NULL
 
 # -----------------------------------------------------------------------------
-# trino_normalize — native (ICU Normalizer2 with NFC/NFD/NFKC/NFKD instances).
+# trino_normalize — native NFC normalization via vendored ICU's Normalizer2.
+# Only the 1-arg form (NFC default) is registered; NFD/NFKC/NFKD aren't
+# pushed from the connector (the vendored ICU only bakes in NFC data).
 # -----------------------------------------------------------------------------
 
-# Single-arg form defaults to NFC. Decomposed café (5 cp) collapses to
-# composed café (4 cp, with U+00E9 'é').
+# Decomposed café (5 cp) collapses to composed café (4 cp, with U+00E9 'é').
 query I
 SELECT trino_normalize('cafe' || chr(769));
 ----
@@ -276,49 +277,11 @@ SELECT length(trino_normalize('cafe' || chr(769)));
 ----
 4
 
-# Two-arg form: NFD decomposes composed 'é' (U+00E9) into 'e' + U+0301.
+# Already-NFC strings are unchanged.
 query I
-SELECT length(trino_normalize('café', 'NFD'));
-----
-5
-
-query I
-SELECT encode(trino_normalize('café', 'NFD')) = '\x63\x61\x66\x65\xCC\x81'::BLOB;
+SELECT trino_normalize('café') = 'café';
 ----
 true
-
-# Case-insensitive form name.
-query I
-SELECT trino_normalize('cafe' || chr(769), 'nfc');
-----
-café
-
-# NFKC: compatibility decomposition + canonical composition. Ligature U+FB01 ('ﬁ')
-# decomposes to 'f' + 'i' under NFKC, but stays as ligature under NFC.
-# Use chr/length to assert byte-precisely since the ligature renders similarly to 'fi'.
-
-# NFC preserves the ligature (1 code point).
-query I
-SELECT length(trino_normalize(chr(64257), 'NFC'));
-----
-1
-
-query I
-SELECT trino_normalize(chr(64257), 'NFC') = chr(64257);
-----
-true
-
-# NFKC decomposes to 'f' + 'i' (2 code points, ASCII).
-query I
-SELECT trino_normalize(chr(64257), 'NFKC') = 'fi';
-----
-true
-
-# NFKD: full compatibility decomposition (same chars here, since 'f' and 'i' are already atomic).
-query I
-SELECT length(trino_normalize(chr(64257), 'NFKD'));
-----
-2
 
 # Empty + NULL.
 query I
@@ -331,11 +294,13 @@ SELECT trino_normalize(NULL);
 ----
 NULL
 
-# Unknown form raises a clear error.
+# 2-arg form is intentionally NOT registered — anything that resolves to it
+# errors with "Function not found", and the connector's translator excludes
+# (normalize, 2) from the pushable set so it's never emitted in pushdown SQL.
 statement error
-SELECT trino_normalize('x', 'bogus');
+SELECT trino_normalize('x', 'NFKC');
 ----
-trino_normalize: unsupported form 'bogus'
+Binder Error
 
 # =============================================================================
 # SQL alias macros + trino_meta()
@@ -454,7 +419,7 @@ NULL
 query I
 SELECT count(*) FROM trino_meta();
 ----
-93
+92
 
 # Row shape: three columns, expected types.
 query III
