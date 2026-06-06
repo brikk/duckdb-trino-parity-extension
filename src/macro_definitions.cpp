@@ -150,6 +150,14 @@ const DefaultMacro kTrinoMacros[] = {
     {DEFAULT_SCHEMA, "trino_sha1",   {"b", nullptr}, {{nullptr, nullptr}}, "unhex(sha1(b))"},
     {DEFAULT_SCHEMA, "trino_sha256", {"b", nullptr}, {{nullptr, nullptr}}, "unhex(sha256(b))"},
 
+    // trino_xxhash64 / trino_sha512 / trino_hmac_sha256 are NOT macros — they are
+    // native C++ scalar functions registered in src/hash_functions.cpp over vendored
+    // primitives (xxHash + WjCryptLib SHA), with no dependency on the hashfuncs/crypto
+    // community extensions. They still appear in trino_meta() below (pushable is
+    // pushable; the implementation surface is internal). hmac_sha256 is native-only
+    // because DuckDB's crypto_hmac is VARCHAR-only and could not handle Trino's
+    // arbitrary VARBINARY key/message — the native function operates on raw bytes.
+
     // ---- Conditional + dates ----
 
     // if(cond, t[, f]) — Trino's `if` function. 2-arg form returns NULL when false.
@@ -290,6 +298,9 @@ SELECT * FROM (
         ('md5',                   1, 'hash'),
         ('sha1',                  1, 'hash'),
         ('sha256',                1, 'hash'),
+        ('sha512',                1, 'hash'),
+        ('xxhash64',              1, 'hash'),
+        ('hmac_sha256',           2, 'hash'),
         ('year',                  1, 'date'),
         ('month',                 1, 'date'),
         ('day',                   1, 'date'),

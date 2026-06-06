@@ -16,6 +16,12 @@ set(TARGET_NAME trino_parity)
 # all work fine with the vendored ICU.
 include_directories(third_party/icu/common)
 include_directories(third_party/icu/i18n)
+# Vendored single-file hash primitives backing the native trino_xxhash64 /
+# trino_sha512 / trino_hmac_sha256 scalar functions (see
+# third_party/hash/THIRD_PARTY_NOTICES.md): xxHash (BSD-2, header-only) and
+# WjCryptLib SHA-256/512 (public domain). Replaces the former runtime
+# dependency on the `hashfuncs` / `crypto` community extensions.
+include_directories(third_party/hash)
 add_subdirectory(third_party)
 
 set(EXTENSION_NAME ${TARGET_NAME}_extension)
@@ -36,8 +42,11 @@ include_directories(src/include)
 set(EXTENSION_SOURCES
     src/trino_parity_extension.cpp
     src/string_functions.cpp
+    src/hash_functions.cpp
     src/alias_macros_loader.cpp
     src/macro_definitions.cpp
+    third_party/hash/WjCryptLib_Sha256.c
+    third_party/hash/WjCryptLib_Sha512.c
     ${ICU_LIBRARY_FILES})
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})

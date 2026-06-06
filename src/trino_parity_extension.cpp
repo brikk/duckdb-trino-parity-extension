@@ -1,6 +1,7 @@
 #define DUCKDB_EXTENSION_MAIN
 
 #include "trino_parity_extension.hpp"
+#include "hash_functions.hpp"
 #include "string_functions.hpp"
 #include "trino_alias_sql.hpp"
 
@@ -15,6 +16,9 @@ static void LoadInternal(ExtensionLoader &loader) {
 	// already exist as catalog entries when the alias SQL runs and any future
 	// macros that try to overwrite them get a clear conflict error.
 	RegisterStringFunctions(loader);
+	// Native hash functions (trino_xxhash64 / trino_sha512 / trino_hmac_sha256),
+	// self-contained over vendored primitives — no community-extension dependency.
+	RegisterHashFunctions(loader);
 	// SQL alias macros (trino_length, trino_substring, ..., trino_meta).
 	// Sourced from src/trino_function_aliases.sql, embedded at build time.
 	RegisterAliasMacros(loader);
