@@ -39,13 +39,24 @@ CCACHE_VOLUME = brikk-trino-parity-ccache
 # claims v0.0.1 and DuckDB v1.5.3 refuses to load it.
 DUCKDB_GIT_DESCRIBE := $(shell git -C $(PROJ_DIR)duckdb describe --tags --long 2>/dev/null || echo "v1.5.3-0-g0000000000")
 
-.PHONY: docker-image linux-arm64 linux-amd64 all-platforms
+.PHONY: docker-image-arm64 docker-image-amd64 linux-arm64 linux-amd64 all-platforms
 
-docker-image:
-	$(DOCKER) build -t $(DOCKER_BUILD_IMAGE) docker -f docker/Dockerfile.linux-build
+# Builder images MUST be built per-platform with an explicit --platform. A plain
+# `docker build` produces only the host-arch variant of the tag, so a later
+# `docker run --platform <other-arch> <tag>` finds no matching local image and
+# falls back to PULLING the local-only tag — which fails with
+# "denied: requested access to the resource is denied". (This is why a bare
+# `make linux-amd64` on an Apple Silicon host used to fail.) Building and running
+# a platform-suffixed tag keeps build + run on the same arch. On Apple Silicon the
+# amd64 image build and the amd64 extension build both run under emulation.
+docker-image-arm64:
+	$(DOCKER) build --platform linux/arm64 -t $(DOCKER_BUILD_IMAGE)-arm64 docker -f docker/Dockerfile.linux-build
+
+docker-image-amd64:
+	$(DOCKER) build --platform linux/amd64 -t $(DOCKER_BUILD_IMAGE)-amd64 docker -f docker/Dockerfile.linux-build
 
 # build/linux-arm64/release/extension/trino_parity/trino_parity.duckdb_extension
-linux-arm64: docker-image
+linux-arm64: docker-image-arm64
 	@mkdir -p $(PROJ_DIR)build/linux-arm64
 	$(DOCKER) run --rm --platform linux/arm64 \
 		-v $(PROJ_DIR):/src \
@@ -55,9 +66,9 @@ linux-arm64: docker-image
 		-e VCPKG_DEFAULT_BINARY_CACHE=/vcpkg-cache \
 		-e TARGET_PLATFORM=linux-arm64 \
 		-e OVERRIDE_GIT_DESCRIBE=$(DUCKDB_GIT_DESCRIBE) \
-		$(DOCKER_BUILD_IMAGE)
+		$(DOCKER_BUILD_IMAGE)-arm64
 
-linux-amd64: docker-image
+linux-amd64: docker-image-amd64
 	@mkdir -p $(PROJ_DIR)build/linux-amd64
 	$(DOCKER) run --rm --platform linux/amd64 \
 		-v $(PROJ_DIR):/src \
@@ -67,6 +78,6 @@ linux-amd64: docker-image
 		-e VCPKG_DEFAULT_BINARY_CACHE=/vcpkg-cache \
 		-e TARGET_PLATFORM=linux-amd64 \
 		-e OVERRIDE_GIT_DESCRIBE=$(DUCKDB_GIT_DESCRIBE) \
-		$(DOCKER_BUILD_IMAGE)
+		$(DOCKER_BUILD_IMAGE)-amd64
 
 all-platforms: linux-arm64 linux-amd64
