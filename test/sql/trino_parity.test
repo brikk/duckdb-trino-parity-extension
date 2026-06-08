@@ -384,6 +384,24 @@ SELECT hex(trino_md5(''::BLOB));
 ----
 D41D8CD98F00B204E9800998ECF8427E
 
+# sha512 / xxhash64 / hmac_sha256 — native C++ (not macros): SHA-512 over raw
+# bytes, xxHash64 rendered big-endian to match Trino, HMAC-SHA256 over raw
+# VARBINARY (vectors are the canonical reference values).
+query I
+SELECT hex(trino_sha512('abc'::BLOB));
+----
+DDAF35A193617ABACC417349AE20413112E6FA4E89A97EA20A9EEEE64B55D39A2192992A274FC1A836BA3C23A3FEEBBD454D4423643CE80E2A9AC94FA54CA49F
+
+query I
+SELECT hex(trino_xxhash64('abc'::BLOB));
+----
+44BC2CF5AD770999
+
+query I
+SELECT hex(trino_hmac_sha256('The quick brown fox jumps over the lazy dog'::BLOB, 'key'::BLOB));
+----
+F7BC83F430538424B13298E6AA6FB143EF4D59A14946175997479DBC2D1A3CD8
+
 # date
 query I
 SELECT trino_year(DATE '2024-12-30');
@@ -419,7 +437,7 @@ NULL
 query I
 SELECT count(*) FROM trino_meta();
 ----
-92
+95
 
 # Row shape: three columns, expected types.
 query III
