@@ -1,0 +1,25 @@
+# Local build toolchain for the trino_parity DuckDB extension.
+#
+#   mise install          # fetch the pinned tools
+#   GEN=ninja make         # build (release) -> build/release/extension/trino_parity/
+#   make test              # run the sqllogic suite
+#
+# This only covers tools mise manages well. A C/C++ compiler (gcc/clang) and
+# GNU make are expected from the system toolchain:
+#   Debian/Ubuntu:  sudo apt-get install build-essential
+#   macOS:          xcode-select --install
+#
+# Note: these tools are ONLY for local builds. The DuckDB community-extensions
+# CI (and this repo's MainDistributionPipeline.yml) builds inside DuckDB's own
+# pinned docker/runner images and ignores this file entirely.
+[tools]
+# DuckDB's CMake build is known-good on the 3.x line. CMake 4.x can error on
+# the `cmake_minimum_required(VERSION 3.5)` compatibility floor used by some of
+# DuckDB's vendored third-party CMakeLists. Pin 3.x to keep local builds green.
+cmake = "3.31"
+ninja = "1.12"
+ccache = "4.10"
+
+[env]
+# Match the generator the Makefile expects without having to export it by hand.
+GEN = "ninja"
