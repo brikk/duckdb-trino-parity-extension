@@ -1,5 +1,12 @@
 # REPORT: String / Unicode audit of DuckDB vs Trino
 
+> **Scope note.** The `trino_parity` extension ships only 10 native functions
+> (see the repo [README](../README.md)); of the string family, only the 7 that
+> genuinely diverge are shipped natively (`trino_lower/upper/reverse/trim/ltrim/rtrim/normalize`).
+> The aligned string functions discussed here (`length`, `substring`, `replace`,
+> `strpos`, `starts_with`, `lpad`, `rpad`, `concat_ws`, `translate`, …) are
+> **not** shipped — the caller emits the bare DuckDB built-in directly.
+
 This is the empirical audit that motivates `trino_parity`'s string functions.
 It ran every string function the extension exposes — plus comparison
 operators — across a Unicode corpus, comparing DuckDB's built-in behaviour
@@ -8,8 +15,9 @@ against Trino's documented semantics, and recording where they diverge.
 Each divergence below maps directly to an implementation decision in the
 extension: functions that diverge are reimplemented natively in C++ against
 the statically-linked ICU (`src/string_functions.cpp`); functions that agree
-on all probed inputs are thin macros over the DuckDB built-in
-(`src/macro_definitions.cpp`).
+on all probed inputs are **not** shipped by the extension at all — the caller
+emits the bare DuckDB built-in directly, since it is already byte-for-byte
+equivalent to Trino.
 
 **Audit provenance:** DuckDB 1.5.x with ICU. A probe ran every function across
 the corpus and emitted a Markdown table; the raw output is in
@@ -27,21 +35,21 @@ distinguish real engine divergences from probe-side rendering noise.
 
 | Function | Audit verdict | Extension implementation |
 |---|---|---|
-| `length/1` | ✅ aligned (code points; emoji counted as 1) | macro |
+| `length/1` | ✅ aligned (code points; emoji counted as 1) | caller-side (bare DuckDB) |
 | `reverse/1` | ❌ **divergent** — DuckDB reverse is grapheme-cluster-aware; Trino is code-point-only | native (ICU code-point reverse) |
 | `trim/1` | ⚠️ partial — DuckDB strips space + EM SPACE but NOT tab/LF/CR/FF/VT; Trino's Java strips all of those | native (ICU `u_isWhitespace`) |
 | `ltrim/1` | ⚠️ partial — same whitespace caveat as `trim` | native (ICU `u_isWhitespace`) |
 | `rtrim/1` | ⚠️ partial — same whitespace caveat | native (ICU `u_isWhitespace`) |
-| `substring/{2,3}` | ✅ aligned (1-based code-point index, incl. emoji and combining marks as separate code points) | macro |
-| `replace/3` | ✅ aligned (code-point-level; composed vs decomposed treated separately on both sides) | macro |
-| `strpos/2` | ✅ aligned (1-based code-point index, 0 if not found) | macro |
-| `starts_with/2` | ✅ aligned (binary prefix on UTF-8 — codepoint-aligned) | macro |
-| `lpad/3` | ✅ aligned (pad to code-point count, incl. emoji and CJK) | macro |
-| `rpad/3` | ✅ aligned | macro |
-| `concat_ws/{2..5}` | ✅ aligned (Unicode separator + NULL skipping both match Trino) | macro |
-| `translate/3` | ✅ aligned (code-point-wise substitution; extra `from` chars deleted in both engines) | macro |
-| `regexp_like/2` | ✅ aligned (RE2 both sides; `\p{Han}`, `\p{So}`, etc. work in both) | macro |
-| `regexp_extract/{2,3}` | ✅ aligned (group 0 = whole match in both; group N captures match) | macro |
+| `substring/{2,3}` | ✅ aligned (1-based code-point index, incl. emoji and combining marks as separate code points) | caller-side (bare DuckDB) |
+| `replace/3` | ✅ aligned (code-point-level; composed vs decomposed treated separately on both sides) | caller-side (bare DuckDB) |
+| `strpos/2` | ✅ aligned (1-based code-point index, 0 if not found) | caller-side (bare DuckDB) |
+| `starts_with/2` | ✅ aligned (binary prefix on UTF-8 — codepoint-aligned) | caller-side (bare DuckDB) |
+| `lpad/3` | ✅ aligned (pad to code-point count, incl. emoji and CJK) | caller-side (bare DuckDB) |
+| `rpad/3` | ✅ aligned | caller-side (bare DuckDB) |
+| `concat_ws/{2..5}` | ✅ aligned (Unicode separator + NULL skipping both match Trino) | caller-side (bare DuckDB) |
+| `translate/3` | ✅ aligned (code-point-wise substitution; extra `from` chars deleted in both engines) | caller-side (bare DuckDB) |
+| `regexp_like/2` | ✅ aligned (RE2 both sides; `\p{Han}`, `\p{So}`, etc. work in both) | caller-side (bare DuckDB) |
+| `regexp_extract/{2,3}` | ✅ aligned (group 0 = whole match in both; group N captures match) | caller-side (bare DuckDB) |
 | `lower/1` | ❌ divergent on Turkish `'İ'` (DuckDB → `'i'`, Trino → `'i'` + U+0307); ASCII + most non-ASCII aligned | native (ICU full case folding) |
 | `upper/1` | ❌ divergent on German `'ß'` (DuckDB → `'ẞ'` U+1E9E, Trino → `'SS'`); ASCII + most non-ASCII aligned | native (ICU full case folding) |
 
@@ -134,7 +142,8 @@ These functions produced Trino-equivalent output for every probed input, includi
 `rpad`, `concat_ws/{2..5}`, `translate`, `regexp_like`, `regexp_extract/{2,3}`
 are all in this aligned set. Code-point counting for `length` and `lpad`/`rpad`
 correctly treats `😀` (1 code point, 2 UTF-16 code units, 4 UTF-8 bytes) as
-length 1. These ship as thin macros over the DuckDB built-in.
+length 1. These are **not** shipped by the extension — the caller emits the
+bare DuckDB built-in directly, since it already matches Trino.
 
 ---
 

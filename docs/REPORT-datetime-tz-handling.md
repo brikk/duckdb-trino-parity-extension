@@ -1,23 +1,33 @@
 # REPORT: DuckDB date/time + TZ handling vs Trino
 
-This is the empirical audit that substantiates `trino_parity`'s date/time
-functions (`trino_year`, `trino_month`, `trino_day`, `trino_date_trunc`,
-`trino_date_diff`, `trino_day_of_week`, `trino_week`, `trino_year_of_week`,
-`trino_hour`, `trino_to_unixtime`, `trino_from_unixtime`,
-`trino_with_timezone`, and the rest of the `date` category in
-[`trino_meta()`](../src/macro_definitions.cpp)). It records where DuckDB and
-Trino agree on calendar/wall-clock arithmetic and — crucially — where any
-function that touches `TIMESTAMP WITH TIME ZONE` depends on the DuckDB **session
-`TimeZone`**. That session-zone dependence is an alignment obligation the
-extension cannot enforce on its own: a caller that pushes Trino predicates to
-DuckDB must set DuckDB's `TimeZone` to Trino's session zone before any predicate
-evaluates. This report pins that requirement empirically and documents the
-exact zone-string normalisation that makes it work.
+> **Scope note.** The `trino_parity` extension ships only 10 native functions
+> (see the repo [README](../README.md)) — **none of them are date/time
+> functions**. Every `year` / `month` / `day` / `date_trunc` / `date_diff` /
+> `day_of_week` / `week` / `year_of_week` / `hour` / `to_unixtime` /
+> `from_unixtime` / `with_timezone` operation discussed here is emitted by the
+> caller directly against DuckDB (bare built-in, or a documented one-line
+> rewrite such as `isodow(…)` for `day_of_week` or `extract('isoyear' …)` for
+> `year_of_week`). This report remains the reference for **how** the caller
+> should emit each one and for the session-`TimeZone` obligation that governs
+> `TIMESTAMP WITH TIME ZONE` correctness.
+
+This is the empirical audit behind the date/time rewrites a caller emits when
+pushing Trino predicates to DuckDB (`year`, `month`, `day`, `date_trunc`,
+`date_diff`, `day_of_week`, `week`, `year_of_week`, `hour`, `to_unixtime`,
+`from_unixtime`, `with_timezone`, and the rest of the `date` category). It
+records where DuckDB and Trino agree on calendar/wall-clock arithmetic and —
+crucially — where any function that touches `TIMESTAMP WITH TIME ZONE` depends
+on the DuckDB **session `TimeZone`**. That session-zone dependence is an
+alignment obligation neither the extension nor a bare rewrite can enforce on
+its own: a caller that pushes Trino predicates to DuckDB must set DuckDB's
+`TimeZone` to Trino's session zone before any predicate evaluates. This report
+pins that requirement empirically and documents the exact zone-string
+normalisation that makes it work.
 
 **Convention:**
 - ✅ aligned — DuckDB output matches Trino's documented behaviour on every probed input, independent of session zone.
 - ⚠️ session-sensitive — aligned only when the DuckDB session `TimeZone` matches Trino's session zone.
-- ❌ not provided — semantics cannot be reconciled by a rename/macro; the extension deliberately omits the function.
+- ❌ not pushable — semantics cannot be reconciled by a rename/rewrite; the caller must evaluate the function above the scan rather than push it.
 
 ---
 
@@ -37,10 +47,10 @@ Three storage shapes matter:
 | `TIMESTAMP(p) WITH TIME ZONE` | Instant + zone (zone travels with the value) | `TIMESTAMPTZ` — instant only; interpretation uses the **session** `TimeZone` | **All extract operations diverge** unless session zones agree. |
 
 The third row is the entire problem. The first two rows are the entire
-opportunity: `DATE` and `TIMESTAMP`-without-zone functions ship as plain
-macros with no session-configuration caveat. Only functions that can receive a
-`TIMESTAMP WITH TIME ZONE` argument (and `trino_from_unixtime`, which
-*produces* one) carry the session-`TimeZone` dependency.
+opportunity: `DATE` and `TIMESTAMP`-without-zone functions are emitted by the
+caller as bare DuckDB built-ins with no session-configuration caveat. Only
+functions that can receive a `TIMESTAMP WITH TIME ZONE` argument (and
+`from_unixtime`, which *produces* one) carry the session-`TimeZone` dependency.
 
 ---
 
@@ -80,10 +90,10 @@ reads `2024-06-15 12:00:00` regardless of reader `TimeZone`, and
 
 **Implication.** Correctness for `TIMESTAMP WITH TIME ZONE` predicates lives
 *entirely* on the DuckDB session `TimeZone` knob — there is no per-column zone
-metadata to interrogate. A caller pushing `trino_year(timestamptz_col) = 2024`
+metadata to interrogate. A caller pushing `year(timestamptz_col) = 2024`
 to DuckDB without first aligning the session zone could silently return rows
 from `2025` (when the reader session is east of UTC and the boundary crosses).
-The extension exposes `trino_year` etc. as correct renames; it is the caller's
+DuckDB's `year` etc. are correct passthroughs; it is the caller's
 responsibility to align the session zone before evaluating them against
 `TIMESTAMPTZ` inputs.
 
@@ -209,45 +219,45 @@ correct response to a refusal is to *not* push `TIMESTAMPTZ`-sensitive
 predicates for that session and let Trino re-evaluate above the scan.
 
 **No separate ICU install to assert.** Named IANA zones resolve without an
-explicit `INSTALL icu; LOAD icu`; the extension's best-effort ICU load (for
-`trino_with_timezone`'s `timezone()`) is harmless but not load-bearing for zone
-resolution. The correctness gate is "did `SET TimeZone = '<normalised>'`
+explicit `INSTALL icu; LOAD icu`; DuckDB's `icu` extension (needed only for the
+`with_timezone` → `timezone()` rewrite the caller emits) is not load-bearing for
+zone resolution. The correctness gate is "did `SET TimeZone = '<normalised>'`
 succeed?", not "did ICU load?".
 
 ---
 
 ## Per-function divergence notes
 
-Functions that look the same on the surface but aren't — and what the extension
-actually ships. Argument-shape classes below: **DATE**, **TIMESTAMP-without-zone**,
-**TIMESTAMP-WITH-zone**, **format-string**.
+Functions that look the same on the surface but aren't — and how the caller
+should emit each one against DuckDB. Argument-shape classes below: **DATE**,
+**TIMESTAMP-without-zone**, **TIMESTAMP-WITH-zone**, **format-string**.
 
-### `trino_day_of_week` — ISO numbering
+### `day_of_week` — ISO numbering
 
 - Trino: `1 = Monday … 7 = Sunday` (ISO).
 - DuckDB `dayofweek(x)`: `0 = Sunday … 6 = Saturday` (non-ISO). ❌ would diverge.
-- DuckDB `isodow(x)`: `1 = Monday … 7 = Sunday` (ISO). ← what the extension uses.
-- Extension body: `trino_day_of_week(d) AS isodow(d)`.
+- DuckDB `isodow(x)`: `1 = Monday … 7 = Sunday` (ISO). ← what the caller emits.
+- Caller emits: `day_of_week(d)` → `isodow(d)`.
 
-### `trino_week` / `trino_week_of_year` — both ISO
+### `week` / `week_of_year` — both ISO
 
 - Trino: `week(x)` and `week_of_year(x)` both return the ISO week (1–53). Trino
   has no separate `iso_week` function.
 - DuckDB: bare `week(x)` is already ISO-aligned — verified empirically
   (`week('2023-01-01') = 52`, `week('2024-12-30') = 1`). No separate `isoweek`
   function exists in DuckDB.
-- Extension bodies: `trino_week(d) AS week(d)` and `trino_week_of_year(d) AS week(d)`.
+- Caller emits: `week(d)` → `week(d)` and `week_of_year(d)` → `week(d)`.
 
-### `trino_year_of_week` / `trino_yow` — ISO week-year, not calendar year
+### `year_of_week` / `yow` — ISO week-year, not calendar year
 
 - Trino: `year_of_week(x)` / `yow(x)` return the ISO week-numbering year, NOT
   the calendar year. `2024-12-30` → `2025`. Trino has no `iso_year` function.
 - DuckDB: no bare `isoyear()` function — reach it via `extract('isoyear' FROM x)`,
   cast to `BIGINT` to match Trino's return type.
-- Extension bodies: `trino_year_of_week(d) AS CAST(extract('isoyear' FROM d) AS BIGINT)`
-  (and `trino_yow` identically).
+- Caller emits: `year_of_week(d)` → `CAST(extract('isoyear' FROM d) AS BIGINT)`
+  (and `yow` identically).
 
-### `trino_date_trunc(unit, x)` — unit set + Monday-start week caveat
+### `date_trunc(unit, x)` — unit set + Monday-start week caveat
 
 - Trino units: `'second' | 'minute' | 'hour' | 'day' | 'week' | 'month' | 'quarter' | 'year'`.
 - DuckDB units: a superset (`'microseconds' | 'millisecond' | … | 'decade' | 'century' | 'millennium'`).
@@ -258,49 +268,49 @@ actually ships. Argument-shape classes below: **DATE**, **TIMESTAMP-without-zone
   while Trino preserves `DATE → DATE` for unit ≥ day. An auto-cast keeps numeric
   comparisons aligned.
 
-### `trino_date_diff(unit, t1, t2)` — boundary-count semantics
+### `date_diff(unit, t1, t2)` — boundary-count semantics
 
 - Trino: count of whole `unit` boundaries crossed between `t1` and `t2`.
   `date_diff('month', '2024-01-31', '2024-02-29') = 1`.
 - DuckDB: same boundary-count semantics.
-- The body is a direct rename; the **cross-month-end edge cases** are the test
-  pressure point (pinned in the corpus). On `TIMESTAMP WITH TIME ZONE` inputs
-  `date_diff` is session-sensitive like every other WTZ extract.
+- The caller emits it as a direct passthrough; the **cross-month-end edge cases**
+  are the test pressure point (pinned in the corpus). On `TIMESTAMP WITH TIME ZONE`
+  inputs `date_diff` is session-sensitive like every other WTZ extract.
 
-### `trino_from_unixtime` / `trino_to_unixtime`
+### `from_unixtime` / `to_unixtime`
 
-- `trino_from_unixtime(double)`: Trino returns `TIMESTAMP(3) WITH TIME ZONE` —
+- `from_unixtime(double)`: Trino returns `TIMESTAMP(3) WITH TIME ZONE` —
   so this function is **session-zone sensitive** (its rendered wall-clock
   components depend on the session zone). DuckDB's analogue is
   `to_timestamp(numeric)` returning `TIMESTAMPTZ`; same absolute instant,
-  session-zone rendering. Extension body: `trino_from_unixtime(d) AS to_timestamp(d)`.
-- `trino_to_unixtime(timestamp)`: Trino returns a `double` in seconds; DuckDB
+  session-zone rendering. Caller emits: `from_unixtime(d)` → `to_timestamp(d)`.
+- `to_unixtime(timestamp)`: Trino returns a `double` in seconds; DuckDB
   `epoch(timestamp)` returns `double` in seconds. When the input is a
-  wall-clock `TIMESTAMP` this is TZ-invariant. Extension body:
-  `trino_to_unixtime(t) AS CAST(epoch(t) AS DOUBLE)`.
+  wall-clock `TIMESTAMP` this is TZ-invariant. Caller emits:
+  `to_unixtime(t)` → `CAST(epoch(t) AS DOUBLE)`.
 
-### `trino_with_timezone` — argument-order flip
+### `with_timezone` — argument-order flip
 
-- Trino `with_timezone(ts, zone)` vs DuckDB `timezone(zone, ts)` — the extension
-  macro flips the argument order: `trino_with_timezone(t, zone) AS timezone(zone, t)`.
-  It requires DuckDB's bundled `icu` extension (loaded best-effort at extension
-  LOAD) for `timezone()`, and is inherently session/zone-aware.
+- Trino `with_timezone(ts, zone)` vs DuckDB `timezone(zone, ts)` — the caller
+  flips the argument order: `with_timezone(t, zone)` → `timezone(zone, t)`.
+  It requires DuckDB's bundled `icu` extension for `timezone()`, and is
+  inherently session/zone-aware.
 
-### `date_format` / `parse_datetime` / `format_datetime` — NOT provided
+### `date_format` / `parse_datetime` / `format_datetime` — NOT pushable
 
 - Trino uses Joda-Time format strings (`yyyy-MM-dd HH:mm:ss`); DuckDB uses
   C `strftime`/`strptime` (`%Y-%m-%d %H:%M:%S`). The two pattern languages are
-  **incompatible** and there is no safe rename without owning a format-string
+  **incompatible** and there is no safe rewrite without owning a format-string
   translation layer.
 - Consequently `date_format`, `date_parse`, `format_datetime`, `parse_datetime`
-  (and `human_readable_seconds`) are **deliberately not exposed** by the
-  extension. A caller must evaluate these above the scan rather than push them.
+  (and `human_readable_seconds`) are **not pushable**. A caller must evaluate
+  these above the scan rather than push them.
 
 ---
 
 ## Divergence-pressure test corpus
 
-The empirical corpus that pins the extension's date macros to Trino. The
+The empirical corpus that pins the caller's date/time rewrites to Trino. The
 general principle: pick inputs where the engines would disagree if they were
 using different rules. A test that passes on `2024-06-15 12:00:00 UTC` proves
 nothing.
@@ -343,8 +353,8 @@ nothing.
 ### Day-of-week numbering
 
 12. `DATE '2024-01-07'` (Sunday). Trino `day_of_week = 7`. DuckDB
-    `dayofweek = 0` (wrong!); `isodow = 7` (right). Pins the macro choice
-    (`trino_day_of_week AS isodow`).
+    `dayofweek = 0` (wrong!); `isodow = 7` (right). Pins the rewrite choice
+    (`day_of_week` → `isodow`).
 
 ### Extreme dates + epoch
 
@@ -387,7 +397,7 @@ nothing.
     session zone — the predicate **must not push**; Trino re-applies it above
     the scan.
 26. `date_format(ts, '%Y')` / `format_datetime(ts, 'yyyy')` — wrong
-    format-string language; **never pushed** (not exposed by the extension).
+    format-string language; **never pushed** (not pushable — see above).
 
 ---
 
@@ -401,11 +411,12 @@ nothing.
    `±HH:MM` with `MM == 00` → `Etc/GMT∓HH` (POSIX inversion); everything else
    passes through. Fractional bare offsets fail cleanly — the correct outcome.
 3. **Gate on `SET TimeZone` success, not on an ICU load.** ICU zone resolution
-   is available without an explicit `LOAD icu`; the extension's best-effort ICU
-   load is only load-bearing for `trino_with_timezone`.
+   is available without an explicit `LOAD icu`; DuckDB's `icu` extension is only
+   load-bearing for the `with_timezone` → `timezone()` rewrite.
 4. **`TIMESTAMPTZ` storage drops the zone** (Finding 1). Correctness for
    WTZ-sensitive predicates lives entirely on the session-`TimeZone` knob — a
-   caller obligation the extension cannot enforce itself.
+   caller obligation that neither the extension nor a bare rewrite can enforce
+   itself.
 5. **Format/parse functions are out of scope** (Joda vs strftime); the caller
    evaluates them above the scan.
 

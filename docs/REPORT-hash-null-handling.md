@@ -1,5 +1,13 @@
 # REPORT: Hash function NULL handling + encoding sanity
 
+> **Scope note.** The `trino_parity` extension ships only 10 native functions
+> (see the repo [README](../README.md)); of the hash family, only
+> `trino_xxhash64` / `trino_sha512` / `trino_hmac_sha256` are shipped natively.
+> `md5` / `sha1` / `sha256` (and the encoding + `concat_ws` helpers discussed
+> here) are **not** shipped — the caller emits them directly against DuckDB
+> (`unhex(md5(x))`, `unhex(sha1(x))`, `unhex(sha256(x))`, etc.). The
+> native-hash rationale below is still the doc's key point.
+
 This report substantiates `trino_parity`'s hash and encoding surface. It
 records the empirical NULL-handling behaviour of DuckDB's built-in hash and
 concat-family functions against Trino's documented semantics, and explains why
@@ -15,10 +23,10 @@ pushable.
 ## TL;DR
 
 1. **DuckDB built-in `md5`, `sha1`, `sha256` propagate NULL correctly** —
-   `md5(NULL) → NULL`, `sha256('a' || NULL || 'c') → NULL`. Trino-aligned. The
-   extension ships them as macros: `trino_md5` / `trino_sha1` / `trino_sha256`
-   wrap the hex-returning built-in in `unhex(...)`, producing BLOB output that
-   matches Trino's VARBINARY return shape.
+   `md5(NULL) → NULL`, `sha256('a' || NULL || 'c') → NULL`. Trino-aligned. These
+   are **not** shipped by the extension — the caller emits `unhex(md5(x))` /
+   `unhex(sha1(x))` / `unhex(sha256(x))` directly against DuckDB's hex-returning
+   built-ins, producing BLOB output that matches Trino's VARBINARY return shape.
 
 2. **DuckDB's variadic `hash(value, …)` does NOT propagate NULL.** `hash(NULL)`
    returns a stable UBIGINT (`13787848793156543929`), not NULL, and
@@ -29,10 +37,11 @@ pushable.
    completeness, not because it is reachable through the extension.
 
 3. **`concat` vs `concat_ws` diverge on NULL.** DuckDB `concat(...)` silently
-   skips NULLs (divergent from Trino, which NULL-propagates), so it is **not**
-   provided. `concat_ws(...)` is aligned across all NULL shapes and **is**
-   provided as `trino_concat_ws`. The `||` operator NULL-propagates in both
-   engines.
+   skips NULLs (divergent from Trino, which NULL-propagates), so a caller must
+   **not** emit it; the caller uses the `||` operator chain instead, which
+   NULL-propagates in both engines. `concat_ws(...)` is aligned across all NULL
+   shapes, so the caller emits DuckDB's bare `concat_ws(...)` directly. Neither
+   is shipped by the extension — both are caller-side.
 
 4. **The extra hashes are self-contained.** `trino_sha512`, `trino_xxhash64`,
    and `trino_hmac_sha256` are native C++ backed by vendored single-file
@@ -52,10 +61,9 @@ pushable.
 | `sha256(NULL)` | NULL | **NULL** | NULL |
 | `sha256('')` | empty | `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` | same hex |
 
-These ship via `unhex(md5(...))` / `unhex(sha1(...))` / `unhex(sha256(...))`
-for BLOB-typed output that matches Trino's VARBINARY return. The macro bodies
-are in [`src/macro_definitions.cpp`](../src/macro_definitions.cpp) under the
-`trino_md5` / `trino_sha1` / `trino_sha256` entries.
+The caller emits `unhex(md5(...))` / `unhex(sha1(...))` / `unhex(sha256(...))`
+directly for BLOB-typed output that matches Trino's VARBINARY return; none of
+these three is shipped by the extension.
 
 ### DuckDB's variadic `hash(value, …)` — NULL is a sentinel, not propagated
 
@@ -75,12 +83,14 @@ not part of the `trino_*` layer. If a caller writes a wrapped expression like
 whenever either operand is NULL, and the wrapping hash is then NULL — which
 matches Trino's `xxhash64(col1 || col2)` behaviour.
 
-### Encoding macros — sanity check
+### Encoding built-ins — sanity check
 
 All NULL-propagate correctly: `hex(NULL)`, `unhex(NULL)`, `to_base64(NULL)`,
 `from_base64(NULL)`, `url_encode(NULL)`, `url_decode(NULL)`, `length(NULL)`.
-These back `trino_to_hex` / `trino_from_hex` / `trino_to_base64` /
-`trino_from_base64` / `trino_url_encode` / `trino_url_decode` / `trino_length`.
+None of these is shipped by the extension — the caller emits the bare DuckDB
+built-ins (`hex` / `unhex` / `to_base64` / `from_base64` / `url_encode` /
+`url_decode` / `length`) directly for `to_hex` / `from_hex` / `to_base64` /
+`from_base64` / `url_encode` / `url_decode` / `length`.
 
 ## `concat` / `concat_ws` NULL behaviour
 
@@ -100,12 +110,12 @@ concat-style call propagate or get silently skipped?
 
 **Takeaway:**
 
-- `concat(...)` is divergent on every NULL-bearing case, so it is **not**
-  exposed. A caller that pushes Trino predicates to DuckDB and needs
+- `concat(...)` is divergent on every NULL-bearing case, so a caller must
+  **not** emit it. A caller that pushes Trino predicates to DuckDB and needs
   NULL-propagating concatenation should use the `||` operator, which is aligned.
-- `concat_ws(...)` is aligned across all NULL shapes and is provided as
-  `trino_concat_ws/{2..5}` (see
-  [`src/macro_definitions.cpp`](../src/macro_definitions.cpp)).
+- `concat_ws(...)` is aligned across all NULL shapes, so the caller emits
+  DuckDB's bare `concat_ws(...)` directly. Neither concat form is shipped by the
+  extension — both are caller-side.
 - The `concat` divergence is the same shape as DuckDB's variadic
   `hash(value, …)`: NULL gets silently absorbed into the result rather than
   propagated. The shared pattern reinforces the general rule — do not expose a
@@ -158,20 +168,20 @@ See [`CMakeLists.txt`](../CMakeLists.txt) (the `third_party/hash` include and
 DuckDB's `crypto_hmac` is VARCHAR-only and could not carry Trino's arbitrary
 VARBINARY key/message; the native function operates on raw bytes.
 
-### Hash functions provided today
+### Hash functions — where each is handled
 
-| Trino function | Extension name | Implementation |
+| Trino function | How it is emitted | Implementation |
 |---|---|---|
-| `md5` | `trino_md5` | macro — `unhex(md5(b))` over DuckDB built-in |
-| `sha1` | `trino_sha1` | macro — `unhex(sha1(b))` over DuckDB built-in |
-| `sha256` | `trino_sha256` | macro — `unhex(sha256(b))` over DuckDB built-in |
-| `sha512` | `trino_sha512` | native C++ over vendored WjCryptLib |
-| `xxhash64` | `trino_xxhash64` | native C++ over vendored xxHash |
-| `hmac_sha256` | `trino_hmac_sha256` | native C++ over vendored WjCryptLib SHA-256 |
+| `md5` | caller-side (bare DuckDB) | caller emits `unhex(md5(b))` directly |
+| `sha1` | caller-side (bare DuckDB) | caller emits `unhex(sha1(b))` directly |
+| `sha256` | caller-side (bare DuckDB) | caller emits `unhex(sha256(b))` directly |
+| `sha512` | `trino_sha512` (native) | native C++ over vendored WjCryptLib |
+| `xxhash64` | `trino_xxhash64` (native) | native C++ over vendored xxHash |
+| `hmac_sha256` | `trino_hmac_sha256` (native) | native C++ over vendored WjCryptLib SHA-256 |
 
-All six appear in `trino_meta()` under the `hash` category; the
-macro-vs-native split is an internal implementation detail — pushable is
-pushable.
+Only the three native functions appear in `trino_meta()` under the `hash`
+category; `md5` / `sha1` / `sha256` are not shipped and are emitted by the
+caller directly against DuckDB's built-ins.
 
 An operator who prefers the community-extension route (loading `crypto` /
 `hashfuncs` and mapping to them) can still do so above the extension; the

@@ -1,5 +1,12 @@
 # RESEARCH: DuckDB extension coverage of Trino-only functions
 
+> **Scope note.** The `trino_parity` extension ships only 10 native functions
+> (see the repo [README](../README.md)): 7 ICU string functions and the 3
+> vendored-lib hash functions (`trino_xxhash64/sha512/hmac_sha256`) discussed
+> below. Every other Trino function — including the aligned / rename / rewrite
+> cases — is emitted by the caller directly against DuckDB and is **not** part
+> of the extension. Nothing else ships as a macro.
+
 This doc substantiates the **scope** of `trino_parity`. Trino exposes a large
 surface of functions that DuckDB lacks natively. Some of those gaps can be
 served by other DuckDB extensions — one core (`inet`) and a handful of
@@ -162,9 +169,10 @@ DuckDB is deployed. By vendoring the hash implementations, `trino_parity` is a
 single self-contained artifact with no runtime chain to a separately-published
 extension.
 
-This is also why the extension prefers native C++ over macros in the hash
-domain: it controls the NULL/empty/encoding semantics end-to-end rather than
-inheriting whatever a third-party extension chose. See
+This is also why the extension implements these three hashes natively rather
+than deferring to a community extension: it controls the NULL/empty/encoding
+semantics end-to-end rather than inheriting whatever a third-party extension
+chose. See
 [REPORT-hash-null-handling.md](REPORT-hash-null-handling.md) for the
 NULL-handling and VARBINARY-wrapping decisions those native implementations
 pin down.
