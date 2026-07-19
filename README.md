@@ -6,8 +6,7 @@ edge-case inputs where DuckDB's built-ins diverge.
 
 Designed to be loaded server-side by anything that pushes Trino-shaped
 predicates down to DuckDB. The first consumer is
-[ducklake-integrations / trino-ducklake](https://github.com/brikk/ducklake-integrations);
-a future trino-duckdb (direct) connector will load it the same way.
+[duckbridge / trino-duckbridge](https://github.com/brikk/duckbridge).
 
 ## Why this exists
 
@@ -38,8 +37,7 @@ the connector reads to decide what's pushable.
 | `day_of_week(d)` | `dayofweek` = 0..6 with Sun=0 | ISO 1..7 with Mon=1 | macro uses `isodow` |
 
 The full divergence catalog and its empirical-verification corpus live in
-[`REPORT-string-unicode-audit.md`](https://github.com/brikk/ducklake-integrations/blob/main/jvm/trino-ducklake/dev-docs/REPORT-string-unicode-audit.md)
-on the parent connector repo.
+[`docs/REPORT-string-unicode-audit.md`](docs/REPORT-string-unicode-audit.md).
 
 ## Function inventory
 
@@ -82,6 +80,20 @@ Java's Unicode semantics exactly:
 `timezone()`; the load sequence does `INSTALL icu; LOAD icu;` best-effort,
 so a sandboxed env without that extension installs fine and only fails if
 `trino_with_timezone` is actually called.
+
+### Timezone caveat
+
+The date/time functions (`trino_year`, `trino_hour`, `trino_date_trunc`,
+`trino_to_unixtime`, `trino_with_timezone`, etc.) evaluate against DuckDB's
+**session `TimeZone`** setting. DuckDB stores `TIMESTAMPTZ` as a pure instant
+— the writer's zone is discarded — and renders/extracts it through the reader
+session's zone. So the caller must set DuckDB's `TimeZone` to match Trino's
+session timezone before any predicate executes; otherwise
+`trino_year(ts) = 2024` can silently return rows from an adjacent year when
+the session is offset from UTC. This is a caller/session-configuration
+obligation the extension cannot enforce on its own. See
+[`docs/REPORT-datetime-tz-handling.md`](docs/REPORT-datetime-tz-handling.md)
+for the full empirical analysis.
 
 ## Installation
 
@@ -151,7 +163,7 @@ make all-platforms  # both
 ```
 
 Output layout (one .duckdb_extension per platform, all optional, all
-independently consumable by the trino-ducklake plugin jar's gradle bundling):
+independently consumable by the trino-duckbridge plugin jar's gradle bundling):
 
 ```
 build/release/extension/trino_parity/trino_parity.duckdb_extension              # host (output of `make`)
@@ -194,7 +206,7 @@ category, and `trino_meta()` shape pins (row count, distinct categories,
 multi-arity listings).
 
 The full cross-engine semantic suite lives in the parent connector repo
-([`TestTrinoFunctionAliases`](https://github.com/brikk/ducklake-integrations/tree/main/jvm/trino-ducklake/src))
+([`TestTrinoFunctionAliases`](https://github.com/brikk/duckbridge/blob/main/trino-duckbridge/test/src/dev/brikk/duckbridge/trino/plugin/TestTrinoFunctionAliases.kt))
 and is what catches drift between the macros here and Trino's documented
 behaviour.
 
@@ -229,6 +241,32 @@ extension binary (adds ~30MB) so Unicode behaviour is independent of the
 host DuckDB build. The vendored snapshot ships only the NFC normalization
 data; NFD/NFKC/NFKD are intentionally out of scope, and the connector's
 pushable set tracks accordingly.
+
+## Design notes & substantiation
+
+The `trino_*` function set is not guesswork — every function is backed by an
+empirical audit of where DuckDB's built-ins agree with or diverge from Trino's
+documented semantics. Those audits, and the Trino↔DuckDB reference they were
+derived from, live under [`docs/`](docs/):
+
+- [`RESEARCH-trino-duckdb-function-mapping.md`](docs/RESEARCH-trino-duckdb-function-mapping.md)
+  — the canonical, category-by-category Trino↔DuckDB function map (sourced from
+  Trino 481 + DuckDB LTS docs) with a per-row alignment verdict and whether the
+  extension provides it as `native`, `macro`, `operator`, or not at all.
+- [`REPORT-string-unicode-audit.md`](docs/REPORT-string-unicode-audit.md)
+  — the Unicode corpus audit that motivates the native ICU string functions
+  (`lower`/`upper` full case folding, code-point `reverse`, Java-whitespace `trim`).
+- [`REPORT-datetime-tz-handling.md`](docs/REPORT-datetime-tz-handling.md)
+  — DuckDB date/time + `TIMESTAMPTZ` session-zone behaviour, the per-function
+  divergences (`day_of_week`→`isodow`, ISO week/year, `date_trunc`/`date_diff`),
+  and the divergence-pressure test corpus. Substantiates the timezone caveat above.
+- [`REPORT-hash-null-handling.md`](docs/REPORT-hash-null-handling.md)
+  — NULL propagation for the hash/encoding functions, the `concat` vs `concat_ws`
+  divergence, and why `sha512`/`xxhash64`/`hmac_sha256` are implemented natively
+  rather than via runtime community-extension dependencies.
+- [`RESEARCH-duckdb-extension-coverage.md`](docs/RESEARCH-duckdb-extension-coverage.md)
+  — the scope boundary: which Trino-only functions other DuckDB extensions could
+  supply, and which remain genuinely uncovered.
 
 ## Future work
 

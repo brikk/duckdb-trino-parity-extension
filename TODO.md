@@ -3,7 +3,7 @@
 This extension exposes DuckDB scalar functions (and one table macro,
 `trino_meta()`) whose semantics are exact-equivalent to the matching Trino
 built-ins, so that predicate pushdown from Trino to DuckDB through the
-[ducklake-integrations](https://github.com/brikk/ducklake-integrations)
+[duckbridge / trino-duckbridge](https://github.com/brikk/duckbridge)
 connector is lossless on non-ASCII / corner-case input where DuckDB's own
 built-ins diverge.
 

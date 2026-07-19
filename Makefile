@@ -15,7 +15,7 @@ include extension-ci-tools/makefiles/duckdb_extension.Makefile
 # Linux binary that the Quack server testcontainer needs.
 #
 # Output goes to `build/<platform>/release/extension/trino_parity/trino_parity.duckdb_extension`.
-# The trino-ducklake gradle plugin walks every available `build/<platform>/...`
+# The trino-duckbridge gradle plugin walks every available `build/<platform>/...`
 # path and bundles each binary into its platform-specific resource slot.
 #
 # First build: ~10-15 min (DuckDB + ICU compiled inside the container).
