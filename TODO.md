@@ -1,11 +1,12 @@
 # TODO
 
-This extension exposes DuckDB scalar functions (and one table macro,
-`trino_meta()`) whose semantics are exact-equivalent to the matching Trino
-built-ins, so that predicate pushdown from Trino to DuckDB through the
+This extension provides native DuckDB scalar functions (and one table macro,
+`trino_meta()`) for the specific cases where DuckDB's built-ins diverge from
+Trino, so that a caller pushing Trino-shaped predicates to DuckDB — such as the
 [duckbridge / trino-duckbridge](https://github.com/brikk/duckbridge)
-connector is lossless on non-ASCII / corner-case input where DuckDB's own
-built-ins diverge.
+connector — stays lossless on non-ASCII / byte-level input. Aligned Trino
+functions are emitted by the caller directly against DuckDB and are not shipped
+here (see [`docs/RESEARCH-trino-duckdb-function-mapping.md`](docs/RESEARCH-trino-duckdb-function-mapping.md)).
 
 ## Done
 
@@ -14,28 +15,24 @@ built-ins diverge.
 - ✅ Native ICU-backed `trino_trim` / `trino_ltrim` / `trino_rtrim` via
   `u_isWhitespace` (Java `Character.isWhitespace` semantics — NBSP /
   FIGURE / NARROW NBSP intentionally NOT whitespace).
-- ✅ Native `trino_normalize/{1,2}` via `icu::Normalizer2` instances
-  (NFC default; 2-arg accepts NFC/NFD/NFKC/NFKD case-insensitively).
-- ✅ `~80` `trino_<name>` macros registered as native `DefaultMacro[]` via
-  `DefaultFunctionGenerator::CreateInternalMacroInfo` — no SQL parse loop
-  at load time (matches `json` extension and Query-farm's `clickhouse-sql`).
-- ✅ `trino_meta()` table macro as `DefaultTableMacro[]` — authoritative
-  pushable-set catalog (92 entries) the connector mirrors in
-  `DuckDbExpressionTranslator.PUSHABLE_FUNCTIONS`.
-- ✅ ICU best-effort INSTALL/LOAD on extension load so `trino_with_timezone`
-  resolves DuckDB's `timezone()`.
+- ✅ Native `trino_normalize/1` (NFC) via `icu::Normalizer2`.
+- ✅ Native `trino_xxhash64` / `trino_sha512` / `trino_hmac_sha256` over
+  vendored single-file primitives (xxHash + WjCryptLib SHA) — no dependency on
+  the `crypto` / `hashfuncs` community extensions.
+- ✅ `trino_meta()` table macro — catalog of the ten native functions the
+  extension provides; a caller probes it at startup.
+- ✅ **Passthrough shrink**: removed the ~85 macros that merely renamed /
+  reshaped a DuckDB built-in with no behaviour change. The caller emits those
+  as bare DuckDB SQL, verified per-entry by the reference connector's
+  cross-engine canary.
 - ✅ Vendored ICU under `third_party/icu/` (copied from DuckDB's bundled
-  `extension/icu/third_party/icu`) — no vcpkg dependency at build time.
-  Trades NFD/NFKC/NFKD pushdown for build-system simplicity; the connector
-  pushes only `normalize/1` (NFC) as a result.
+  `extension/icu/third_party/icu`) — no vcpkg dependency at build time. Ships
+  NFC data only.
 - ✅ Linux build container (`make linux-arm64`, `make linux-amd64`) for
   cross-platform binaries when developing on macOS.
-- ✅ Full CI build matrix green on every push — `MainDistributionPipeline.yml`
-  calls `extension-ci-tools`' `_extension_distribution.yml` reusable workflow,
-  which builds and signs Linux (amd64/arm64), MacOS (amd64/arm64), Windows
-  (amd64 MSVC + MinGW), and DuckDB-Wasm (mvp/eh/threads) on every push to
-  `main`. Plus Format + Tidy checks. Artifacts are downloadable per-run
-  via `scripts/fetch-from-ci-artifacts.sh`.
+- ✅ Full CI build matrix green on every push (Linux amd64/arm64, MacOS
+  amd64/arm64, Windows MSVC + MinGW, DuckDB-Wasm mvp/eh/threads) + Format/Tidy,
+  built against DuckDB v1.5.4 to match community-extensions.
 - ✅ CI-artifact fallback script
   ([`scripts/fetch-from-ci-artifacts.sh`](scripts/fetch-from-ci-artifacts.sh))
   for pulling platform builds without running the local container.
@@ -47,17 +44,19 @@ built-ins diverge.
 Path to `INSTALL trino_parity FROM community; LOAD trino_parity;` —
 zero-binary-management for operators.
 
-- Add a `description.yml` (per
-  https://duckdb.org/community_extensions/documentation).
+- Finalize `description.yml` (per
+  https://duckdb.org/community_extensions/documentation) — version `0.2.0`,
+  `ref` pinned to the released commit.
 - Submit a PR to https://github.com/duckdb/community-extensions adding our
   description.
 - After acceptance, DuckDB CI builds and serves signed binaries from
   `https://community-extensions.duckdb.org/...`.
-- The connector then drops the bundled binaries in favour of `INSTALL ...
-  FROM community` at attach time. No more 36MB-per-platform in the plugin jar.
+- The connector then loads it via `INSTALL ... FROM community` instead of
+  bundling per-platform binaries.
 
-### 2. Migrate `from_hex` / `unhex` rounds + remaining macros
+### 2. Add further native functions only on demonstrated divergence
 
-Some round-6 entries are still SQL macros (`trino_from_hex` calls DuckDB's
-`unhex`; multi-arg overload macros are stacked). Consolidate into single
-named overloads, audit for unused entries.
+The bar for shipping a new `trino_*` function is "DuckDB's built-in genuinely
+disagrees with Trino." If a new divergence is found (e.g. a locale-sensitive
+op), add it natively here and to `trino_meta()`; otherwise it stays a
+caller-side bare-DuckDB call.

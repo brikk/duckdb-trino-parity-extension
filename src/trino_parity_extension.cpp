@@ -12,15 +12,15 @@
 namespace duckdb {
 
 static void LoadInternal(ExtensionLoader &loader) {
-	// Native ICU-backed functions first (lower / upper / reverse), so they
-	// already exist as catalog entries when the alias SQL runs and any future
-	// macros that try to overwrite them get a clear conflict error.
+	// Native ICU-backed string functions (lower / upper / reverse / trim family /
+	// normalize) — the cases where DuckDB's built-ins diverge from Trino on
+	// Unicode input.
 	RegisterStringFunctions(loader);
 	// Native hash functions (trino_xxhash64 / trino_sha512 / trino_hmac_sha256),
 	// self-contained over vendored primitives — no community-extension dependency.
 	RegisterHashFunctions(loader);
-	// SQL alias macros (trino_length, trino_substring, ..., trino_meta).
-	// Sourced from src/trino_function_aliases.sql, embedded at build time.
+	// The trino_meta() table macro cataloguing the functions above. (No scalar
+	// alias macros are shipped; aligned Trino functions are the caller's job.)
 	RegisterAliasMacros(loader);
 }
 

@@ -1,8 +1,8 @@
 # trino_parity — DuckDB ↔ Trino function parity
 
-A DuckDB extension that registers `trino_<name>(...)` scalar functions whose
-semantics match Trino's documented behaviour, even on Unicode and other
-edge-case inputs where DuckDB's built-ins diverge.
+A DuckDB extension that provides native `trino_<name>(...)` scalar functions
+for the specific cases where DuckDB's built-ins diverge from Trino's documented
+behaviour on Unicode and byte-level inputs.
 
 Designed to be loaded server-side by anything that pushes Trino-shaped
 predicates down to DuckDB. The first consumer is
@@ -10,57 +10,59 @@ predicates down to DuckDB. The first consumer is
 
 ## Why this exists
 
-Trino implements `lower()`, `upper()`, `reverse()`, regex semantics, etc. in
-terms of Java's Unicode 15 tables. DuckDB has its own implementations that
-agree on ASCII but disagree on real-world Unicode input. If a Trino connector
-naively pushes `WHERE lower(name) = 'apple'` down to DuckDB, the filter runs
-with different semantics in each engine — and rows visible to Trino can
-silently disappear from the result.
+Trino implements `lower()`, `upper()`, `reverse()`, etc. in terms of Java's
+Unicode tables. DuckDB has its own implementations that agree on ASCII but
+disagree on real-world Unicode input. If a Trino connector naively pushes
+`WHERE lower(name) = 'apple'` down to DuckDB, the filter runs with different
+semantics in each engine — and rows visible to Trino can silently disappear
+from the result.
 
-This extension is the **interpretation layer**: the Trino connector emits
-`trino_<name>(...)` calls instead of bare Trino built-ins, and each `trino_*`
-in this extension resolves to either a native C++ implementation (when DuckDB's
-built-in diverges) or a thin macro over the equivalent DuckDB built-in (when
-they agree). The catalog table macro `trino_meta()` is the authoritative list
-the connector reads to decide what's pushable.
+This extension supplies **only the functions where that actually happens** —
+where DuckDB's built-in genuinely diverges and a native C++ reimplementation is
+required to match Trino. A caller emits `trino_<name>(...)` for these. For the
+large majority of Trino functions DuckDB's built-in is already byte-for-byte
+equivalent (or a trivial rename / operator / one-line rewrite), so the caller
+emits those directly against DuckDB — no extension needed. See
+[`docs/RESEARCH-trino-duckdb-function-mapping.md`](docs/RESEARCH-trino-duckdb-function-mapping.md)
+for the full per-function classification and
+[what this extension deliberately does not ship](#what-this-extension-deliberately-does-not-ship)
+below.
 
-### Concrete divergences pinned today
+The catalog table macro `trino_meta()` lists exactly the functions this
+extension provides, so a consumer can probe it at startup.
 
-| Function | DuckDB built-in | Trino spec | Extension result |
+### Concrete divergences fixed
+
+Every function shipped by this extension exists because of a row like these:
+
+| Function | DuckDB built-in | Trino spec | `trino_*` result |
 |---|---|---|---|
 | `lower('İ')` (U+0130) | `'i'` (1 cp, simple case folding) | `'i'` + U+0307 (2 cp, full case folding) | matches Trino |
 | `upper('ß')` (U+00DF) | `'ẞ'` (U+1E9E, 1 cp) | `'SS'` (2 cp) | matches Trino |
 | `upper('straße strauß')` | `'STRAẞE STRAUẞ'` | `'STRASSE STRAUSS'` | matches Trino |
 | `reverse('cafe' + U+0301)` | grapheme-aware (combining mark stays glued to `e`) | code-point-only (mark moves to front) | matches Trino |
 | `reverse('👨‍👩‍👧')` (ZWJ family) | unchanged (one cluster) | reversed across ZWJ boundaries | matches Trino |
-| `regexp_replace(s, p, r)` | first match only | global by default | macro forces `'g'` flag |
-| `day_of_week(d)` | `dayofweek` = 0..6 with Sun=0 | ISO 1..7 with Mon=1 | macro uses `isodow` |
+| `trim` (tab / LF / CR / FF / VT) | bare `trim` leaves them | Java `Character.isWhitespace` strips them | matches Trino |
+| `xxhash64(varbinary)` | no direct built-in (`hash()` differs) | XXH64, big-endian bytes | matches Trino |
 
 The full divergence catalog and its empirical-verification corpus live in
 [`docs/REPORT-string-unicode-audit.md`](docs/REPORT-string-unicode-audit.md).
 
 ## Function inventory
 
-`trino_meta()` is the source of truth — 92 entries across 8 categories. A
-representative slice (full list lives in
-[`src/macro_definitions.cpp`](src/macro_definitions.cpp) under
-`kTrinoMacros[]` + `kTrinoTableMacros[]`):
+`trino_meta()` is the source of truth — 10 functions in 2 categories, all
+native C++. Their implementations live in
+[`src/string_functions.cpp`](src/string_functions.cpp) +
+[`src/hash_functions.cpp`](src/hash_functions.cpp); the catalog itself is in
+[`src/macro_definitions.cpp`](src/macro_definitions.cpp):
 
 | Category | Functions |
 |---|---|
-| String (native, ICU) | `trino_lower/1`, `trino_upper/1`, `trino_reverse/1`, `trino_trim/1`, `trino_ltrim/1`, `trino_rtrim/1`, `trino_normalize/{1,2}` |
-| String (macro) | `trino_length/1`, `trino_substring/{2,3}`, `trino_replace/3`, `trino_strpos/2`, `trino_starts_with/2`, `trino_lpad/3`, `trino_rpad/3`, `trino_concat_ws/{2..5}`, `trino_translate/3`, `trino_chr/1`, `trino_bit_length/1` |
-| Numeric | `trino_abs`, `trino_ceil`, `trino_floor`, `trino_mod`, `trino_power`, `trino_sqrt`, `trino_exp`, `trino_ln`, `trino_log2`, `trino_log10`, `trino_sign`, `trino_pi/0`, `trino_truncate`, `trino_sin/cos/tan/asin/acos/atan/atan2`, `trino_sinh/cosh/tanh`, `trino_degrees/radians`, `trino_cbrt` |
-| Bitwise | `trino_bitwise_and/or/not/xor`, `trino_bitwise_left_shift`, `trino_bitwise_right_shift` |
-| Regex (RE2 on both sides) | `trino_regexp_like/2`, `trino_regexp_extract/{2,3}`, `trino_regexp_replace/{2,3}` |
-| Encoding | `trino_url_encode/decode`, `trino_to_hex` / `trino_from_hex`, `trino_to_base64` / `trino_from_base64` |
-| Distance | `trino_levenshtein_distance/2`, `trino_hamming_distance/2` |
-| Hash (VARBINARY-wrapped) | `trino_md5`, `trino_sha1`, `trino_sha256` |
-| Date | `trino_year/month/day/quarter`, `trino_date_trunc/2`, `trino_date_diff/3`, `trino_day_of_week/year`, `trino_last_day_of_month`, `trino_week/week_of_year`, `trino_year_of_week`, `trino_yow`, `trino_hour/minute/second/millisecond`, `trino_to_unixtime`, `trino_from_unixtime`, `trino_with_timezone` |
-| Conditional | `trino_if/{2,3}` |
+| String (native, ICU) | `trino_lower/1`, `trino_upper/1`, `trino_reverse/1`, `trino_trim/1`, `trino_ltrim/1`, `trino_rtrim/1`, `trino_normalize/1` |
+| Hash (native, vendored) | `trino_xxhash64/1`, `trino_sha512/1`, `trino_hmac_sha256/2` |
 
-The native string functions all use the statically-linked ICU and match
-Java's Unicode semantics exactly:
+The string functions use the statically-linked ICU and match Java's Unicode
+semantics exactly:
 
 - `trino_lower` / `trino_upper`: full case folding via `u_strToLower` /
   `u_strToUpper` with root locale (Turkish `İ` → `'i'` + U+0307, German
@@ -70,30 +72,52 @@ Java's Unicode semantics exactly:
 - `trino_trim` / `trino_ltrim` / `trino_rtrim`: skip code points where
   `u_isWhitespace` is true (Java's `Character.isWhitespace` — NBSP /
   U+2007 / U+202F intentionally NOT stripped).
-- `trino_normalize/1`: `icu::Normalizer2::getNFCInstance()` — vendored
-  ICU ships only NFC's static data, so this is the only form registered.
-  The 2-arg form (`'NFC'` / `'NFD'` / `'NFKC'` / `'NFKD'` selector) was
-  pruned with the vendored-ICU migration; the connector's pushable set
-  matches.
+- `trino_normalize/1`: `icu::Normalizer2::getNFCInstance()` — the vendored
+  ICU ships only NFC's static data, so NFC is the only form provided.
 
-`trino_with_timezone` requires DuckDB's bundled `icu` extension for
-`timezone()`; the load sequence does `INSTALL icu; LOAD icu;` best-effort,
-so a sandboxed env without that extension installs fine and only fails if
-`trino_with_timezone` is actually called.
+The hash functions are self-contained over vendored single-file primitives
+(xxHash, BSD-2; WjCryptLib SHA, public domain) — no dependency on the `crypto`
+/ `hashfuncs` community extensions:
 
-### Timezone caveat
+- `trino_xxhash64`: XXH64 over raw bytes, rendered big-endian to match Trino's
+  `xxhash64(varbinary) -> varbinary`.
+- `trino_sha512`: SHA-512 over raw bytes → `VARBINARY`.
+- `trino_hmac_sha256`: HMAC-SHA256 over raw `VARBINARY` key + message (DuckDB's
+  `crypto_hmac` is VARCHAR-only and can't take arbitrary binary keys).
 
-The date/time functions (`trino_year`, `trino_hour`, `trino_date_trunc`,
-`trino_to_unixtime`, `trino_with_timezone`, etc.) evaluate against DuckDB's
-**session `TimeZone`** setting. DuckDB stores `TIMESTAMPTZ` as a pure instant
-— the writer's zone is discarded — and renders/extracts it through the reader
-session's zone. So the caller must set DuckDB's `TimeZone` to match Trino's
-session timezone before any predicate executes; otherwise
-`trino_year(ts) = 2024` can silently return rows from an adjacent year when
-the session is offset from UTC. This is a caller/session-configuration
-obligation the extension cannot enforce on its own. See
-[`docs/REPORT-datetime-tz-handling.md`](docs/REPORT-datetime-tz-handling.md)
-for the full empirical analysis.
+All ten functions are timezone- and locale-invariant, so loading this extension
+has no session-state prerequisites.
+
+### What this extension deliberately does NOT ship
+
+Trino exposes hundreds of functions; the vast majority need no help because
+DuckDB's built-in already matches. A consumer emits those directly against
+DuckDB rather than through this extension:
+
+- **Identical passthroughs** (~57): `length`, `abs`, `year`, `sqrt`,
+  `substring`, `concat_ws`, `regexp_extract`, … — same name, same semantics.
+- **Trivial renames** (~11): `truncate`→`trunc`, `regexp_like`→`regexp_matches`,
+  `from_unixtime`→`to_timestamp`, `day_of_year`→`dayofyear`, …
+- **Operator bridges** (5): `bitwise_and/or/not/left_shift/right_shift` →
+  `&`, `|`, `~`, `<<`, `>>`.
+- **One-line SQL rewrites** (~12): `regexp_replace(…, 'g')` (global default),
+  `isodow(…)` (`day_of_week`), `unhex(md5(…))` (VARBINARY shape),
+  `extract('isoyear' …)` (`year_of_week`), casts for `to_unixtime` /
+  `millisecond`, arg-flip for `with_timezone`, …
+
+These ~85 were previously shipped as passthrough macros; they were removed
+because they added a dependency surface without changing any behaviour. The
+[function mapping](docs/RESEARCH-trino-duckdb-function-mapping.md) records the
+DuckDB equivalent and alignment verdict for every one.
+
+> **Timezone note for callers.** DuckDB's date/time functions
+> (`year`, `hour`, `date_trunc`, `to_unixtime`, `with_timezone`, …) evaluate
+> `TIMESTAMPTZ` against the session `TimeZone`. A caller pushing those must set
+> DuckDB's `TimeZone` to match Trino's session zone before evaluating
+> predicates, or `year(ts) = 2024` can silently return rows from an adjacent
+> year. This is a session-configuration obligation on the caller — none of the
+> functions this extension ships are affected. See
+> [`docs/REPORT-datetime-tz-handling.md`](docs/REPORT-datetime-tz-handling.md).
 
 ## Installation
 
@@ -105,7 +129,7 @@ SELECT trino_lower('İSTANBUL');
 -- 'i' + U+0307 + 'stanbul' — matches Trino, not DuckDB's bare lower()
 
 SELECT * FROM trino_meta();
--- 92 rows: name, arity, category
+-- 10 rows: name, arity, category
 ```
 
 Until this extension is published to the
@@ -152,7 +176,7 @@ Artifacts:
 
 ### Cross-platform builds via Docker
 
-The connector's Quack server runs as a Linux testcontainer; on a macOS dev box
+A consumer may run DuckDB inside a Linux container while you develop on macOS;
 a host-built (darwin-arm64) `.duckdb_extension` cannot be loaded there. Two
 make targets build Linux variants inside a Docker container:
 
@@ -199,48 +223,46 @@ without any further configuration.
 make test
 ```
 
-68 sqllogic assertions covering the Unicode divergence fixtures (Turkish İ,
-German ß, decomposed café, ZWJ emoji families, CJK), the trim whitespace set
-(Java vs. ICU coverage), NFC normalization, one spot check per macro
-category, and `trino_meta()` shape pins (row count, distinct categories,
-multi-arity listings).
+The sqllogic suite covers the Unicode divergence fixtures (Turkish İ, German ß,
+decomposed café, ZWJ emoji families, CJK), the trim whitespace set (Java vs.
+DuckDB coverage), NFC normalization, the native hash reference vectors
+(SHA-512 / xxHash64 / HMAC-SHA256), and `trino_meta()` shape pins (the 10-row
+count and the two categories).
 
-The full cross-engine semantic suite lives in the parent connector repo
+The reference connector additionally runs a cross-engine semantic suite
 ([`TestTrinoFunctionAliases`](https://github.com/brikk/duckbridge/blob/main/trino-duckbridge/test/src/dev/brikk/duckbridge/trino/plugin/TestTrinoFunctionAliases.kt))
-and is what catches drift between the macros here and Trino's documented
-behaviour.
+that verifies both these native functions and the caller-emitted bare-DuckDB
+rewrites against Trino's documented behaviour on a pinned DuckDB version.
 
 ## Architecture
 
-Four source files:
+Five source files:
 
 - `src/string_functions.cpp` — native C++ scalar functions backed by
-  the statically-linked vendored ICU: `trino_lower`, `trino_upper`, `trino_reverse`,
-  `trino_trim`, `trino_ltrim`, `trino_rtrim`, `trino_normalize/{1,2}`.
-  These are the places where DuckDB's built-ins diverge from Trino on
-  real-world Unicode input; rewriting in C++ via ICU pins exact Java
-  semantics.
-- `src/macro_definitions.cpp` — `DefaultMacro[] kTrinoMacros` and
-  `DefaultTableMacro[] kTrinoTableMacros` arrays. Each entry maps a
-  Trino call shape to its DuckDB body; multi-overload macros sit as
-  consecutive same-name entries. This is the source of truth for the
-  macro layer — the historical `.sql` file is gone.
-- `src/alias_macros_loader.cpp` — `RegisterAliasMacros(loader)` iterates
-  the arrays and registers each via
-  `DefaultFunctionGenerator::CreateInternalMacroInfo` /
-  `DefaultTableFunctionGenerator::CreateTableMacroInfo` (the same path
-  DuckDB's bundled `json` extension uses). No SQL parse loop. Also runs
-  a small `INSTALL icu; LOAD icu;` best-effort so
-  `trino_with_timezone` can resolve DuckDB's `timezone()`.
-- `src/trino_parity_extension.cpp` — entry point. Registers the native
-  functions first, then the macros.
+  the statically-linked vendored ICU: `trino_lower`, `trino_upper`,
+  `trino_reverse`, `trino_trim`, `trino_ltrim`, `trino_rtrim`,
+  `trino_normalize`. These are the places where DuckDB's built-ins diverge
+  from Trino on real-world Unicode input; rewriting in C++ via ICU pins
+  exact Java semantics.
+- `src/hash_functions.cpp` — native C++ `trino_xxhash64`, `trino_sha512`,
+  `trino_hmac_sha256` over vendored single-file primitives, so the hashes are
+  self-contained with no community-extension dependency.
+- `src/macro_definitions.cpp` — the `DefaultMacro[] kTrinoMacros` (now empty)
+  and `DefaultTableMacro[] kTrinoTableMacros` arrays. The only object it
+  registers is the `trino_meta()` table macro cataloguing the ten native
+  functions.
+- `src/alias_macros_loader.cpp` — `RegisterAliasMacros(loader)` registers
+  `trino_meta()` via `DefaultTableFunctionGenerator::CreateTableMacroInfo`
+  (the same path DuckDB's bundled `json` extension uses). The scalar-macro
+  loop is retained but iterates an empty array.
+- `src/trino_parity_extension.cpp` — entry point. Registers the native string
+  functions, then the native hash functions, then `trino_meta()`.
 
 ICU is vendored under `third_party/icu/` — a snapshot of DuckDB's bundled
 ICU (`common` + `i18n` + `stubdata`). Statically linked into the loadable
 extension binary (adds ~30MB) so Unicode behaviour is independent of the
 host DuckDB build. The vendored snapshot ships only the NFC normalization
-data; NFD/NFKC/NFKD are intentionally out of scope, and the connector's
-pushable set tracks accordingly.
+data; NFD/NFKC/NFKD are intentionally out of scope.
 
 ## Design notes & substantiation
 
@@ -251,15 +273,17 @@ derived from, live under [`docs/`](docs/):
 
 - [`RESEARCH-trino-duckdb-function-mapping.md`](docs/RESEARCH-trino-duckdb-function-mapping.md)
   — the canonical, category-by-category Trino↔DuckDB function map (sourced from
-  Trino 481 + DuckDB LTS docs) with a per-row alignment verdict and whether the
-  extension provides it as `native`, `macro`, `operator`, or not at all.
+  Trino 481 + DuckDB LTS docs) with a per-row alignment verdict and how each is
+  handled: `native` (shipped here) vs. caller-side (bare built-in, rename,
+  operator, or one-line rewrite).
 - [`REPORT-string-unicode-audit.md`](docs/REPORT-string-unicode-audit.md)
   — the Unicode corpus audit that motivates the native ICU string functions
   (`lower`/`upper` full case folding, code-point `reverse`, Java-whitespace `trim`).
 - [`REPORT-datetime-tz-handling.md`](docs/REPORT-datetime-tz-handling.md)
   — DuckDB date/time + `TIMESTAMPTZ` session-zone behaviour, the per-function
   divergences (`day_of_week`→`isodow`, ISO week/year, `date_trunc`/`date_diff`),
-  and the divergence-pressure test corpus. Substantiates the timezone caveat above.
+  and the divergence-pressure test corpus. Reference for callers emitting the
+  date/time functions (see the timezone note above) — no date function ships here.
 - [`REPORT-hash-null-handling.md`](docs/REPORT-hash-null-handling.md)
   — NULL propagation for the hash/encoding functions, the `concat` vs `concat_ws`
   divergence, and why `sha512`/`xxhash64`/`hmac_sha256` are implemented natively
@@ -275,8 +299,8 @@ See [`TODO.md`](TODO.md). Headline items:
 - Publishing to the
   [community-extensions](https://github.com/duckdb/community-extensions)
   catalog, enabling `INSTALL trino_parity FROM community;` for operators.
-- Consolidating the remaining macro entries that wrap DuckDB built-ins
-  (`from_hex` / `unhex` etc.) — clean-up, not correctness.
+- Adding any further native functions only where a new DuckDB↔Trino divergence
+  is found — the bar for inclusion is "the built-in genuinely disagrees."
 
 ## License
 

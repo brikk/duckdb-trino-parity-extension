@@ -1,5 +1,5 @@
 # name: test/sql/trino_parity.test
-# description: Parity with Trino on Unicode + edge-case inputs where DuckDB's built-ins diverge. Covers native trino_lower / upper / reverse / trim family / normalize, ~80 macro renames, and the trino_meta() catalog.
+# description: Parity with Trino on Unicode + byte-level inputs where DuckDB's built-ins diverge. Covers the ten native functions (trino_lower/upper/reverse, trim family, normalize, xxhash64/sha512/hmac_sha256) and the trino_meta() catalog.
 # group: [sql]
 
 # Before LOAD: functions don't exist.
@@ -263,7 +263,7 @@ NULL
 # -----------------------------------------------------------------------------
 # trino_normalize — native NFC normalization via vendored ICU's Normalizer2.
 # Only the 1-arg form (NFC default) is registered; NFD/NFKC/NFKD aren't
-# pushed from the connector (the vendored ICU only bakes in NFC data).
+# provided (the vendored ICU only bakes in NFC data).
 # -----------------------------------------------------------------------------
 
 # Decomposed café (5 cp) collapses to composed café (4 cp, with U+00E9 'é').
@@ -295,103 +295,25 @@ SELECT trino_normalize(NULL);
 NULL
 
 # 2-arg form is intentionally NOT registered — anything that resolves to it
-# errors with "Function not found", and the connector's translator excludes
-# (normalize, 2) from the pushable set so it's never emitted in pushdown SQL.
+# errors with a Binder Error.
 statement error
 SELECT trino_normalize('x', 'NFKC');
 ----
 Binder Error
 
-# =============================================================================
-# SQL alias macros + trino_meta()
-#
-# The extension also loads src/trino_function_aliases.sql at LOAD time, which
-# registers ~60 trino_<name> macros (length / substring / abs / regexp_like / …)
-# and the trino_meta() table macro that catalogs every pushable name+arity.
-# One spot check per category — the macros are thin renames over DuckDB
-# built-ins, so we're verifying registration succeeded, not the underlying
-# semantics. Trino-vs-DuckDB semantic divergences (e.g. concat NULL handling,
-# trim whitespace set) are pinned in the parent connector's
-# TestTrinoFunctionAliases cross-engine harness, not here.
-# =============================================================================
+# -----------------------------------------------------------------------------
+# Native hash functions — trino_xxhash64 / trino_sha512 / trino_hmac_sha256.
+# Self-contained C++ over vendored primitives (xxHash + WjCryptLib SHA), no
+# dependency on the crypto / hashfuncs community extensions. Trino returns
+# VARBINARY, so these return BLOB; the reference values are canonical.
+# -----------------------------------------------------------------------------
 
-# string
-query I
-SELECT trino_length('hello');
-----
-5
-
-query I
-SELECT trino_strpos('foobar', 'bar');
-----
-4
-
-query I
-SELECT trino_concat_ws('-', 'a', 'b', 'c');
-----
-a-b-c
-
-# numeric
-query I
-SELECT trino_abs(-7);
-----
-7
-
-query I
-SELECT trino_pi() > 3.14 AND trino_pi() < 3.15;
-----
-true
-
-query I
-SELECT trino_bitwise_and(12, 10);
-----
-8
-
-# regex
-query I
-SELECT trino_regexp_like('hello world', 'w(o|0)rld');
-----
-true
-
-# Trino's regexp_replace replaces ALL matches by default. The macro forces 'g'
-# so a non-anchored pattern strips every occurrence, not just the first.
-query I
-SELECT trino_regexp_replace('aaa', 'a', 'b');
-----
-bbb
-
-# encoding
-query I
-SELECT trino_to_hex('A'::BLOB);
-----
-41
-
-query I
-SELECT trino_url_encode('a b');
-----
-a%20b
-
-# distance
-query I
-SELECT trino_levenshtein_distance('kitten', 'sitting');
-----
-3
-
-# hash — Trino returns VARBINARY; macros wrap unhex(...) so the macro return
-# IS a BLOB. md5 of empty input is the standard d41d8cd98f00b204e9800998ecf8427e.
-query I
-SELECT hex(trino_md5(''::BLOB));
-----
-D41D8CD98F00B204E9800998ECF8427E
-
-# sha512 / xxhash64 / hmac_sha256 — native C++ (not macros): SHA-512 over raw
-# bytes, xxHash64 rendered big-endian to match Trino, HMAC-SHA256 over raw
-# VARBINARY (vectors are the canonical reference values).
 query I
 SELECT hex(trino_sha512('abc'::BLOB));
 ----
 DDAF35A193617ABACC417349AE20413112E6FA4E89A97EA20A9EEEE64B55D39A2192992A274FC1A836BA3C23A3FEEBBD454D4423643CE80E2A9AC94FA54CA49F
 
+# xxHash64 rendered big-endian to match Trino's xxhash64(varbinary).
 query I
 SELECT hex(trino_xxhash64('abc'::BLOB));
 ----
@@ -402,65 +324,94 @@ SELECT hex(trino_hmac_sha256('The quick brown fox jumps over the lazy dog'::BLOB
 ----
 F7BC83F430538424B13298E6AA6FB143EF4D59A14946175997479DBC2D1A3CD8
 
-# date
+# NULL propagation on the native hashes.
 query I
-SELECT trino_year(DATE '2024-12-30');
-----
-2024
-
-# day_of_week: Trino is ISO (Mon=1, Sun=7), NOT DuckDB's default dayofweek
-# (Sun=0). The macro uses isodow.
-query I
-SELECT trino_day_of_week(DATE '2024-01-07');
-----
-7
-
-# conditional
-query I
-SELECT trino_if(true, 'yes', 'no');
-----
-yes
-
-query I
-SELECT trino_if(false, 'yes');
+SELECT trino_sha512(NULL);
 ----
 NULL
 
+query I
+SELECT trino_hmac_sha256(NULL, 'key'::BLOB);
+----
+NULL
+
+# =============================================================================
+# Passthrough functions are NOT shipped by this extension.
+#
+# The ~85 aligned/rename/operator/rewrite functions that used to be macros were
+# removed — a caller emits the bare DuckDB built-in (or a one-line rewrite)
+# directly. Assert a representative set no longer resolves, so an accidental
+# re-add is caught.
+# =============================================================================
+
+statement error
+SELECT trino_length('hello');
+----
+Catalog Error
+
+statement error
+SELECT trino_abs(-7);
+----
+Catalog Error
+
+statement error
+SELECT trino_md5(''::BLOB);
+----
+Catalog Error
+
+statement error
+SELECT trino_year(DATE '2024-12-30');
+----
+Catalog Error
+
+statement error
+SELECT trino_regexp_replace('aaa', 'a', 'b');
+----
+Catalog Error
+
+statement error
+SELECT trino_with_timezone(TIMESTAMP '2024-06-15 12:00:00', 'UTC');
+----
+Catalog Error
+
 # -----------------------------------------------------------------------------
-# trino_meta() — authoritative catalog of pushable (name, arity) entries.
+# trino_meta() — catalog of the functions this extension provides.
 # -----------------------------------------------------------------------------
 
-# Total row count is the contract with the Java-side PUSHABLE_FUNCTIONS parity
-# test (testJavaPushableSetMatchesDuckDbMeta). If this number changes the
-# parent connector's test will fail until the Java set is updated too. Bump
-# both sides in the same change.
+# Exactly the ten native functions. A consumer probes this at startup; the
+# reference connector's drift test asserts its required set matches this list.
 query I
 SELECT count(*) FROM trino_meta();
 ----
-95
+10
 
-# Row shape: three columns, expected types.
+# Row shape: three columns, expected types. Native functions are listed here —
+# they're what the extension provides.
 query III
-SELECT trino_name, arg_count, category FROM trino_meta() WHERE trino_name = 'length' AND arg_count = 1;
+SELECT trino_name, arg_count, category FROM trino_meta() WHERE trino_name = 'lower' AND arg_count = 1;
 ----
-length	1	string
+lower	1	string
 
-# Native-backed functions still appear in trino_meta — they're pushable, they
-# just happen to be implemented in C++ rather than as macros.
+# The three native string-divergence fixers are present.
 query I
 SELECT count(*) FROM trino_meta() WHERE trino_name IN ('lower', 'upper', 'reverse');
 ----
 3
 
-# Multi-arity functions: substring has both 2- and 3-arg overloads listed.
-query I
-SELECT count(*) FROM trino_meta() WHERE trino_name = 'substring';
+# The three native hashes are present, including the 2-arg HMAC.
+query III
+SELECT trino_name, arg_count, category FROM trino_meta() WHERE trino_name = 'hmac_sha256';
 ----
-2
+hmac_sha256	2	hash
 
-# All categories present (string, numeric, regex, encoding, distance, hash,
-# date, conditional — 8 total).
+# Two categories only: string + hash.
 query I
 SELECT count(DISTINCT category) FROM trino_meta();
 ----
-8
+2
+
+# The removed passthroughs are absent from the catalog too.
+query I
+SELECT count(*) FROM trino_meta() WHERE trino_name IN ('length', 'abs', 'year', 'md5', 'with_timezone');
+----
+0
