@@ -36,8 +36,8 @@ CCACHE_VOLUME = brikk-trino-parity-ccache
 # submodule. Inside the build container we rsync without .git/ — there's no
 # git context — so we compute the OVERRIDE_GIT_DESCRIBE value on the host
 # (which DOES have git context) and pass it through. Without this the binary
-# claims v0.0.1 and DuckDB v1.5.4 refuses to load it.
-DUCKDB_GIT_DESCRIBE := $(shell git -C $(PROJ_DIR)duckdb describe --tags --long 2>/dev/null || echo "v1.5.4-0-g0000000000")
+# claims v0.0.1 and DuckDB v1.5.5 refuses to load it.
+DUCKDB_GIT_DESCRIBE := $(shell git -C $(PROJ_DIR)duckdb describe --tags --long 2>/dev/null || echo "v1.5.5-0-g0000000000")
 
 .PHONY: docker-image-arm64 docker-image-amd64 linux-arm64 linux-amd64 all-platforms
 
