@@ -121,8 +121,13 @@ DuckDB equivalent and alignment verdict for every one.
 
 ## Installation
 
+`trino_parity` is published to the DuckDB
+[community-extensions](https://github.com/duckdb/community-extensions) catalog,
+so a stock (signed) DuckDB installs it directly — no `allow_unsigned_extensions`
+needed:
+
 ```sql
-INSTALL trino_parity FROM '<repository-url-or-local-build-path>';
+INSTALL trino_parity FROM community;
 LOAD trino_parity;
 
 SELECT trino_lower('İSTANBUL');
@@ -132,15 +137,12 @@ SELECT * FROM trino_meta();
 -- 10 rows: name, arity, category
 ```
 
-Until this extension is published to the
-[community-extensions](https://github.com/duckdb/community-extensions) catalog,
-loading happens via direct path:
+Alternatively, load a locally-built or vendored binary via direct path (set
+`allow_unsigned_extensions=true` at DuckDB startup):
 
 ```sql
 LOAD '/absolute/path/to/trino_parity.duckdb_extension';
 ```
-
-with `allow_unsigned_extensions=true` set at DuckDB startup.
 
 ## Building
 
