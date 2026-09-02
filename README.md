@@ -37,9 +37,9 @@ Every function shipped by this extension exists because of a row like these:
 
 | Function | DuckDB built-in | Trino spec | `trino_*` result |
 |---|---|---|---|
-| `lower('İ')` (U+0130) | `'i'` (1 cp, simple case folding) | `'i'` + U+0307 (2 cp, full case folding) | matches Trino |
-| `upper('ß')` (U+00DF) | `'ẞ'` (U+1E9E, 1 cp) | `'SS'` (2 cp) | matches Trino |
-| `upper('straße strauß')` | `'STRAẞE STRAUẞ'` | `'STRASSE STRAUSS'` | matches Trino |
+| `upper('ß')` (U+00DF) | `'ẞ'` (U+1E9E — utf8proc special case) | `'ß'` unchanged (simple mapping: no uppercase in UnicodeData) | matches Trino |
+| `upper('straße strauß')` | `'STRAẞE STRAUẞ'` | `'STRAßE STRAUß'` | matches Trino |
+| `lower('İ')` (U+0130) | `'i'` | `'i'` (simple mapping — *not* `'i'` + U+0307) | matches Trino |
 | `reverse('cafe' + U+0301)` | grapheme-aware (combining mark stays glued to `e`) | code-point-only (mark moves to front) | matches Trino |
 | `reverse('👨‍👩‍👧')` (ZWJ family) | unchanged (one cluster) | reversed across ZWJ boundaries | matches Trino |
 | `trim` (tab / LF / CR / FF / VT) | bare `trim` leaves them | Java `Character.isWhitespace` strips them | matches Trino |
@@ -64,9 +64,15 @@ native C++. Their implementations live in
 The string functions use the statically-linked ICU and match Java's Unicode
 semantics exactly:
 
-- `trino_lower` / `trino_upper`: full case folding via `u_strToLower` /
-  `u_strToUpper` with root locale (Turkish `İ` → `'i'` + U+0307, German
-  `ß` → `'SS'`).
+- `trino_lower` / `trino_upper`: **simple**, per-code-point case mapping via
+  `u_tolower` / `u_toupper` in a `U8_NEXT` loop. This mirrors Trino exactly:
+  `StringFunctions.lower/upper` delegate to airlift `SliceUtf8`, which applies
+  `Character.toLowerCase(int)` / `toUpperCase(int)` code point by code point —
+  *not* `String.toLowerCase(Locale.ROOT)`. So `upper('ß')` = `'ß'` (no 1:2
+  expansion), `lower('İ')` = `'i'`, no Greek final-sigma rule, ligatures
+  unchanged. (Earlier releases used ICU full string case mapping, which
+  diverged from Trino on every one of those inputs.) DuckDB's built-in differs
+  only in special-casing `upper('ß')` = `'ẞ'`.
 - `trino_reverse`: code-point reverse via `U8_PREV` (combining marks
   detach, ZWJ emoji reverse boundary-by-boundary).
 - `trino_trim` / `trino_ltrim` / `trino_rtrim`: skip code points where
@@ -130,8 +136,8 @@ needed:
 INSTALL trino_parity FROM community;
 LOAD trino_parity;
 
-SELECT trino_lower('İSTANBUL');
--- 'i' + U+0307 + 'stanbul' — matches Trino, not DuckDB's bare lower()
+SELECT trino_upper('straße');
+-- 'STRAßE' — matches Trino's simple per-code-point mapping (DuckDB's bare upper() gives 'STRAẞE')
 
 SELECT * FROM trino_meta();
 -- 10 rows: name, arity, category
@@ -280,7 +286,7 @@ derived from, live under [`docs/`](docs/):
   operator, or one-line rewrite).
 - [`REPORT-string-unicode-audit.md`](docs/REPORT-string-unicode-audit.md)
   — the Unicode corpus audit that motivates the native ICU string functions
-  (`lower`/`upper` full case folding, code-point `reverse`, Java-whitespace `trim`).
+  (`lower`/`upper` simple per-code-point case mapping, code-point `reverse`, Java-whitespace `trim`).
 - [`REPORT-datetime-tz-handling.md`](docs/REPORT-datetime-tz-handling.md)
   — DuckDB date/time + `TIMESTAMPTZ` session-zone behaviour, the per-function
   divergences (`day_of_week`→`isodow`, ISO week/year, `date_trunc`/`date_diff`),
@@ -298,9 +304,9 @@ derived from, live under [`docs/`](docs/):
 
 See [`TODO.md`](TODO.md). Headline items:
 
-- Publishing to the
-  [community-extensions](https://github.com/duckdb/community-extensions)
-  catalog, enabling `INSTALL trino_parity FROM community;` for operators.
+- Bumping the vendored ICU snapshot (currently ICU 66 / Unicode 13) so case
+  pairs added in Unicode 14–16 (e.g. Glagolitic U+2C2F, Vithkuqi) map as the
+  JDK does — the one known residual `trino_lower`/`trino_upper` divergence.
 - Adding any further native functions only where a new DuckDB↔Trino divergence
   is found — the bar for inclusion is "the built-in genuinely disagrees."
 

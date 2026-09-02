@@ -29,29 +29,58 @@ SELECT trino_lower(NULL);
 ----
 NULL
 
-# Turkish capital dotted I (U+0130).
-#   DuckDB built-in lower() = 'i'           (1 code point, simple case folding)
-#   Trino + ICU root        = 'i' + U+0307  (2 code points, full case folding)
-# Assert bytes via BLOB equality to side-step renderer ambiguity.
+# Case-mapping model: Trino's lower()/upper() are airlift SliceUtf8.toLowerCase /
+# toUpperCase = per-code-point Character.toLowerCase(int)/toUpperCase(int), i.e.
+# the SIMPLE 1:1 mapping from UnicodeData.txt — NOT Java String.toLowerCase(Locale.ROOT)
+# (full/SpecialCasing mapping). Every expectation below was verified against Trino 483.
+
+# Turkish capital dotted I (U+0130): simple mapping is U+0069 'i' alone.
+# (Full mapping would give 'i' + U+0307; Trino does NOT do that.)
 query I
-SELECT encode(trino_lower(chr(304))) = '\x69\xCC\x87'::BLOB;
+SELECT encode(trino_lower(chr(304))) = '\x69'::BLOB;
 ----
 true
 
-# Same input, code-point length must be 2 (not 1).
 query I
 SELECT length(trino_lower(chr(304)));
 ----
-2
+1
 
-# Greek capital sigma → medial sigma under root locale (final-sigma rule is
-# locale-specific and not applied here, matching Java Locale.ROOT).
+query I
+SELECT trino_lower(chr(304) || 'stanbul');
+----
+istanbul
+
+# Greek capital sigma → σ everywhere. Trino applies no final-sigma rule (a
+# context-sensitive full-mapping rule), so word-final Σ is σ (U+03C3), not ς (U+03C2).
 query I
 SELECT trino_lower('Σ');
 ----
 σ
 
-# ASCII inside a larger non-ASCII string — case folding leaves non-letters alone.
+query I
+SELECT encode(trino_lower('ΟΔΥΣΣΕΥΣ')) = encode('οδυσσευσ');
+----
+true
+
+query I
+SELECT encode(trino_lower('ΣΑΣ')) = encode('σασ');
+----
+true
+
+# Kelvin sign (U+212A) and Ångström sign (U+212B) have simple lowercase mappings.
+query I
+SELECT trino_lower(chr(8490) || chr(8491)) = 'kå';
+----
+true
+
+# Deseret (astral, 4-byte UTF-8) has a simple case pair: U+10400 → U+10428.
+query I
+SELECT trino_lower(chr(66560)) = chr(66600);
+----
+true
+
+# ASCII inside a larger non-ASCII string — case mapping leaves non-letters alone.
 query I
 SELECT trino_lower('Café 日本');
 ----
@@ -76,24 +105,59 @@ SELECT trino_upper(NULL);
 ----
 NULL
 
-# German sharp s (U+00DF).
-#   DuckDB built-in upper() = 'ẞ'  (U+1E9E, 1 code point)
-#   Trino + ICU root        = 'SS' (2 code points, full case folding expansion)
+# German sharp s (U+00DF) has NO simple uppercase mapping in UnicodeData.txt.
+#   DuckDB built-in upper() = 'ẞ'  (U+1E9E — utf8proc special-cases it)
+#   Java String.toUpperCase  = 'SS' (SpecialCasing 1:2 expansion)
+#   Trino                    = 'ß'  (unchanged — Character.toUpperCase(0xDF) == 0xDF)
 query I
 SELECT trino_upper('ß');
 ----
-SS
+ß
 
 query I
 SELECT length(trino_upper('ß'));
 ----
-2
+1
 
-# Multiple ß expand independently.
 query I
 SELECT trino_upper('straße strauß');
 ----
-STRASSE STRAUSS
+STRAßE STRAUß
+
+# Ligatures have no simple uppercase: unchanged (full mapping would expand to 'FI', 'FF', 'FFI').
+query I
+SELECT trino_upper(chr(64257) || chr(64256) || chr(64259)) = chr(64257) || chr(64256) || chr(64259);
+----
+true
+
+# U+0149 ŉ, U+0390 ΐ, U+01F0 ǰ: SpecialCasing-only uppercase → unchanged under simple mapping.
+query I
+SELECT trino_upper(chr(329) || chr(912) || chr(496)) = chr(329) || chr(912) || chr(496);
+----
+true
+
+# U+1F80 ᾀ → U+1F88 ᾈ is a simple 1:1 mapping (full mapping gives 'ἈΙ', 2 code points).
+query I
+SELECT trino_upper(chr(8064)) = chr(8072);
+----
+true
+
+query I
+SELECT length(trino_upper(chr(8064)));
+----
+1
+
+# Titlecase digraph U+01C5 ǅ → U+01C4 Ǆ (upper) / U+01C6 ǆ (lower).
+query I
+SELECT trino_upper(chr(453)) = chr(452) AND trino_lower(chr(453)) = chr(454);
+----
+true
+
+# Dotless ı (U+0131) → 'I'; long s ſ (U+017F) → 'S'.
+query I
+SELECT trino_upper(chr(305) || chr(383));
+----
+IS
 
 # -----------------------------------------------------------------------------
 # trino_reverse
@@ -174,13 +238,13 @@ SELECT trino_reverse(trino_reverse('hello'));
 ----
 hello
 
-# Explicit non-round-trip pin for full-case-folding: trino_upper of
-# trino_lower('İ') gives 'I' + U+0307, NOT back to U+0130. This is the
-# documented Trino/Java behaviour and the contract we're enforcing.
+# Non-round-trip pin under simple mapping: trino_lower('İ') = 'i', and
+# trino_upper('i') = 'I' — NOT back to U+0130. (Full mapping would have given
+# 'I' + U+0307; Trino does not.)
 query I
-SELECT encode(trino_upper(trino_lower(chr(304)))) = '\x49\xCC\x87'::BLOB;
+SELECT trino_upper(trino_lower(chr(304)));
 ----
-true
+I
 
 # -----------------------------------------------------------------------------
 # trino_trim / trino_ltrim / trino_rtrim — native (ICU u_isWhitespace,

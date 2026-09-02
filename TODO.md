@@ -11,7 +11,10 @@ here (see [`docs/RESEARCH-trino-duckdb-function-mapping.md`](docs/RESEARCH-trino
 ## Done
 
 - ✅ Native ICU-backed `trino_lower` / `trino_upper` / `trino_reverse`
-  (root-locale full case folding, code-point reverse).
+  (simple per-code-point case mapping via `u_tolower`/`u_toupper` — Trino's
+  `SliceUtf8`/`Character.toUpperCase(int)` model, corrected 2026-09-02 from the
+  earlier root-locale *full* mapping which diverged from Trino on ß, İ, final
+  sigma and ligatures; code-point reverse).
 - ✅ Native ICU-backed `trino_trim` / `trino_ltrim` / `trino_rtrim` via
   `u_isWhitespace` (Java `Character.isWhitespace` semantics — NBSP /
   FIGURE / NARROW NBSP intentionally NOT whitespace).
@@ -39,20 +42,30 @@ here (see [`docs/RESEARCH-trino-duckdb-function-mapping.md`](docs/RESEARCH-trino
 
 ## Open
 
-### 1. Publish to DuckDB community-extensions
+### 1. Publishing to DuckDB community-extensions (done; per-release procedure)
 
-Path to `INSTALL trino_parity FROM community; LOAD trino_parity;` —
-zero-binary-management for operators.
+Published: `INSTALL trino_parity FROM community; LOAD trino_parity;` serves
+signed binaries from `https://community-extensions.duckdb.org/<duckdb-version>/<platform>/`.
+The catalog entry is `extensions/trino_parity/description.yml` in
+https://github.com/duckdb/community-extensions and pins a `ref` (commit SHA) of
+this repo — **a new release is not live until that ref is bumped.**
 
-- Finalize `description.yml` (per
-  https://duckdb.org/community_extensions/documentation) — version `0.2.0`,
-  `ref` pinned to the released commit.
-- Submit a PR to https://github.com/duckdb/community-extensions adding our
-  description.
-- After acceptance, DuckDB CI builds and serves signed binaries from
-  `https://community-extensions.duckdb.org/...`.
-- The connector then loads it via `INSTALL ... FROM community` instead of
-  bundling per-platform binaries.
+Per release:
+1. Land the change on `main` here; CI (MainDistributionPipeline) must be green.
+2. Bump `vcpkg.json` `version`.
+3. PR to duckdb/community-extensions updating `ref` (new SHA) and `version`, and
+   keeping `docs.hello_world` / `extended_description` truthful to the shipped
+   semantics.
+4. Consumers (e.g. duckbridge's `fetch-parity-extension.sh`) pick the new binary
+   up once the community CDN is rebuilt.
+
+### 1a. Bump vendored ICU (Unicode 13 → ≥ 16)
+
+`third_party/icu` is DuckDB's ICU 66 snapshot (Unicode 13). Trino runs on the
+worker JDK (JDK 21 = Unicode 15, JDK 25 = Unicode 16), so case pairs added in
+Unicode 14–16 diverge: `trino_lower(U+2C2F)` (Glagolitic, 14.0) stays U+2C2F
+where Trino gives U+2C5F. Bump to an ICU release carrying Unicode 16 data and
+pin a canary for U+2C2F in `test/sql/trino_parity.test`.
 
 ### 2. Add further native functions only on demonstrated divergence
 

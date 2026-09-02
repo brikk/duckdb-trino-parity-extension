@@ -17,36 +17,83 @@ namespace duckdb {
 
 namespace {
 
-// Trino's lower() is Java String.toLowerCase(Locale.ROOT): full Unicode
-// case folding. DuckDB's built-in lower() does simple case folding, which
-// diverges on inputs like U+0130 ('İ', Turkish capital dotted I):
-//   DuckDB lower('İ') = 'i'
-//   Trino  lower('İ') = 'i' + U+0307   (i + COMBINING DOT ABOVE)
-// ICU's u_strToLower with locale "" (root) matches the Java semantics.
+// Case mapping model
+// ------------------
+// Trino's lower()/upper() are NOT Java String.toLowerCase/toUpperCase(Locale.ROOT).
+// io.trino.operator.scalar.StringFunctions delegates to airlift's
+// SliceUtf8.toLowerCase/toUpperCase, which walk the string one code point at a
+// time and apply Character.toLowerCase(int) / Character.toUpperCase(int) — the
+// SIMPLE, 1:1, context-free case mapping from UnicodeData.txt. Consequences
+// (all verified against Trino 483 on 2026-09-02):
+//   upper('ß')       = 'ß'   (U+00DF has no simple uppercase; NOT 'SS', NOT U+1E9E)
+//   lower('İ')       = 'i'   (U+0130 -> U+0069; NOT 'i' + U+0307)
+//   lower('ΟΔΥΣΣΕΥΣ') = 'οδυσσευσ' (no final-sigma rule; every Σ -> σ)
+//   upper('ﬁ')       = 'ﬁ'   (U+FB01 ligature has no simple uppercase)
+//   upper('ᾀ')       = 'ᾈ'   (U+1F80 -> U+1F88, a 1:1 mapping, NOT 'ἈΙ')
+// ICU's per-code-point u_tolower / u_toupper read the same simple-mapping field,
+// so a U8_NEXT loop over them reproduces Trino byte-for-byte. Full string case
+// mapping (UnicodeString::toLower/toUpper, u_strToLower/u_strToUpper) applies
+// SpecialCasing.txt 1:N and contextual rules and diverges on every line above.
+//
+// Why not DuckDB's built-in lower()/upper()? utf8proc also does simple mapping
+// but special-cases upper('ß') = 'ẞ' (U+1E9E), which Trino does not.
+//
+// Invalid UTF-8 cannot reach here (DuckDB validates VARCHAR); if U8_NEXT ever
+// reports a negative code point we copy the offending bytes through unchanged.
+
+inline UChar32 SimpleToLower(UChar32 c) {
+	return u_tolower(c);
+}
+
+inline UChar32 SimpleToUpper(UChar32 c) {
+	return u_toupper(c);
+}
+
+template <UChar32 (*MapCodePoint)(UChar32)>
+inline std::string MapCodePoints(const char *data, idx_t size) {
+	const auto *src = reinterpret_cast<const uint8_t *>(data);
+	int32_t len = static_cast<int32_t>(size);
+	std::string out;
+	out.reserve(static_cast<size_t>(len));
+	int32_t i = 0;
+	while (i < len) {
+		int32_t prev = i;
+		UChar32 c;
+		U8_NEXT(src, i, len, c);
+		if (c < 0) {
+			out.append(reinterpret_cast<const char *>(src + prev), static_cast<size_t>(i - prev));
+			continue;
+		}
+		UChar32 mapped = MapCodePoint(c);
+		if (mapped == c) {
+			out.append(reinterpret_cast<const char *>(src + prev), static_cast<size_t>(i - prev));
+			continue;
+		}
+		uint8_t buf[U8_MAX_LENGTH];
+		int32_t n = 0;
+		UBool is_error = false;
+		U8_APPEND(buf, n, U8_MAX_LENGTH, mapped, is_error);
+		if (is_error) {
+			// Unreachable for valid scalar values; fall back to the unmapped bytes.
+			out.append(reinterpret_cast<const char *>(src + prev), static_cast<size_t>(i - prev));
+			continue;
+		}
+		out.append(reinterpret_cast<const char *>(buf), static_cast<size_t>(n));
+	}
+	return out;
+}
+
 void TrinoLowerFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &input = args.data[0];
 	UnaryExecutor::Execute<string_t, string_t>(input, result, args.size(), [&](string_t s) {
-		icu::UnicodeString us = icu::UnicodeString::fromUTF8(icu::StringPiece(s.GetData(), s.GetSize()));
-		us.toLower(icu::Locale::getRoot());
-		std::string out;
-		us.toUTF8String(out);
-		return StringVector::AddString(result, out);
+		return StringVector::AddString(result, MapCodePoints<SimpleToLower>(s.GetData(), s.GetSize()));
 	});
 }
 
-// Trino's upper() is Java String.toUpperCase(Locale.ROOT). DuckDB's upper()
-// does simple case folding; the most visible divergence is U+00DF ('ß'):
-//   DuckDB upper('ß') = 'ẞ'   (U+1E9E, LATIN CAPITAL LETTER SHARP S)
-//   Trino  upper('ß') = 'SS'  (full case folding expands single → two code points)
-// ICU's u_strToUpper with root locale matches Java.
 void TrinoUpperFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &input = args.data[0];
 	UnaryExecutor::Execute<string_t, string_t>(input, result, args.size(), [&](string_t s) {
-		icu::UnicodeString us = icu::UnicodeString::fromUTF8(icu::StringPiece(s.GetData(), s.GetSize()));
-		us.toUpper(icu::Locale::getRoot());
-		std::string out;
-		us.toUTF8String(out);
-		return StringVector::AddString(result, out);
+		return StringVector::AddString(result, MapCodePoints<SimpleToUpper>(s.GetData(), s.GetSize()));
 	});
 }
 

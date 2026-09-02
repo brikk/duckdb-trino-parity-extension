@@ -50,8 +50,8 @@ distinguish real engine divergences from probe-side rendering noise.
 | `translate/3` | ✅ aligned (code-point-wise substitution; extra `from` chars deleted in both engines) | caller-side (bare DuckDB) |
 | `regexp_like/2` | ✅ aligned (RE2 both sides; `\p{Han}`, `\p{So}`, etc. work in both) | caller-side (bare DuckDB) |
 | `regexp_extract/{2,3}` | ✅ aligned (group 0 = whole match in both; group N captures match) | caller-side (bare DuckDB) |
-| `lower/1` | ❌ divergent on Turkish `'İ'` (DuckDB → `'i'`, Trino → `'i'` + U+0307); ASCII + most non-ASCII aligned | native (ICU full case folding) |
-| `upper/1` | ❌ divergent on German `'ß'` (DuckDB → `'ẞ'` U+1E9E, Trino → `'SS'`); ASCII + most non-ASCII aligned | native (ICU full case folding) |
+| `lower/1` | ✅ aligned on the corpus (see erratum below — the `'İ'` claim was wrong) | native (ICU simple per-code-point mapping) |
+| `upper/1` | ❌ divergent on German `'ß'` (DuckDB → `'ẞ'` U+1E9E, Trino → `'ß'` unchanged); everything else aligned | native (ICU simple per-code-point mapping) |
 
 **Comparison operators** (`=`, `<>`, `<`, `<=`, `>`, `>=`): ✅ aligned with
 default BINARY collation. DuckDB does byte comparison on UTF-8, which is
@@ -111,14 +111,25 @@ where ICU's `u_isWhitespace` is true, matching Java's `Character.isWhitespace`
 
 ### `lower/1`, `upper/1` — simple vs full case folding
 
-- `lower('İ')` (U+0130): DuckDB → `'i'` (1 code point, simple folding); Trino → `'i'` + U+0307 (2 code points, full folding).
-- `upper('ß')` (U+00DF): DuckDB → `'ẞ'` (U+1E9E, 1 code point); Trino → `'SS'` (2 code points).
+> **ERRATUM (2026-09-02).** The "Trino" column below was inferred from Java's
+> `String.toLowerCase/toUpperCase(Locale.ROOT)` and never run against Trino. It is
+> wrong. Trino's `StringFunctions.lower/upper` delegate to airlift
+> `SliceUtf8.toLowerCase/toUpperCase`, which apply `Character.toLowerCase(int)` /
+> `toUpperCase(int)` per code point — the **simple** mapping. Verified against
+> Trino 483: `lower('İ')` = `'i'` (1 cp), `upper('ß')` = `'ß'` (unchanged),
+> `lower('ΟΔΥΣΣΕΥΣ')` = `'οδυσσευσ'` (no final sigma), `upper('ﬁ')` = `'ﬁ'`,
+> `upper('ᾀ')` = `'ᾈ'` (1:1). The original ICU full-mapping implementation
+> therefore diverged from Trino on 16 of a 63-string corpus and returned wrong
+> rows through the connector. The real DuckDB-vs-Trino divergence is narrower
+> than claimed: DuckDB's utf8proc `upper('ß')` = `'ẞ'` (U+1E9E) where Trino
+> keeps `'ß'`; everything else in the corpus already agreed.
 
-ASCII and most non-ASCII inputs agree; the divergence is confined to
-characters whose full-folding expansion differs from simple folding.
+- ~~`lower('İ')` (U+0130): DuckDB → `'i'`; Trino → `'i'` + U+0307.~~ Both `'i'`.
+- `upper('ß')` (U+00DF): DuckDB → `'ẞ'` (U+1E9E, 1 code point); Trino → `'ß'` (unchanged). ~~`'SS'`~~
 
-**Resolution:** `trino_lower` / `trino_upper` use ICU `u_strToLower` /
-`u_strToUpper` with the root locale (full case folding), matching Java.
+**Resolution (current):** `trino_lower` / `trino_upper` apply ICU `u_tolower` /
+`u_toupper` per code point (simple mapping), matching Trino byte-for-byte on the
+corpus in `test/sql/trino_parity.test`.
 
 ---
 
