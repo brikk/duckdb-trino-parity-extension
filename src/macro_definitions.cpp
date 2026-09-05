@@ -1,7 +1,5 @@
-// Native DefaultMacro[] / DefaultTableMacro[] definitions for the trino_parity
-// extension. Registered at extension LOAD time via
-// DefaultFunctionGenerator::CreateInternalMacroInfo / CreateTableMacroInfo
-// (the same path DuckDB's bundled `json` / `icu` extensions use).
+// Native DefaultTableMacro[] definitions for the trino_parity extension.
+// Registered at extension LOAD time via CreateTableMacroInfo.
 //
 // SCOPE (as of the passthrough shrink):
 // The extension ships ONLY the functions where DuckDB's built-in genuinely
@@ -21,8 +19,7 @@
 // any behaviour. See docs/RESEARCH-trino-duckdb-function-mapping.md for the
 // per-function classification.
 //
-// The scalar-macro array is therefore intentionally empty; the only catalog
-// object registered here is the trino_meta() table macro.
+// The only catalog object registered here is the trino_meta() table macro.
 
 #include "macro_definitions.hpp"
 
@@ -31,16 +28,6 @@
 namespace duckdb {
 
 // clang-format off
-
-// No scalar macros are shipped anymore — every divergence-fixing function is a
-// native C++ scalar (string_functions.cpp / hash_functions.cpp). The loader
-// still iterates this array; a sentinel-only array registers nothing.
-const DefaultMacro kTrinoMacros[] = {
-    // Sentinel — must end the array.
-    {nullptr, nullptr, {nullptr}, {{nullptr, nullptr}}, nullptr},
-};
-
-// ---- Table macros ----
 
 // trino_meta(): authoritative catalog of the functions this extension provides.
 // A calling layer probes it at startup to confirm the divergence-fixing
