@@ -85,32 +85,66 @@ Two extra requirements beyond a plain data bump:
   target JDK and diffing against the extension; carry a tiny override table for
   any code point where ICU disagrees with the JDK. **See 1b — this may be moot.**
 
-### 1b. DuckDB 2 will remove ICU — plan the ICU exit (gates 1a)
+### 1b. DuckDB 2.0 drops ICU — plan the ICU exit (gates 1a)
 
-DuckDB 2 (due "soon", per DuckDB 2 prep notes) drops ICU from its libraries in
-favour of internal Unicode implementations. Impact on this plugin:
-- **Runtime is NOT broken.** We statically link our *own* vendored ICU into the
-  `.duckdb_extension`, independent of DuckDB's libraries — so removing DuckDB's
-  ICU doesn't break our Unicode at load time.
-- **But the source anchor and the strategy change.** Our snapshot was copied from
-  DuckDB's `extension/icu`; once DuckDB drops it we must track upstream ICU
-  ourselves, reconcile the DuckDB 2 build/extension-template, and keep carrying a
-  ~20 MB vendored ICU (binary size, Wasm cost) that the rest of the ecosystem is
-  deprecating.
-- **Therefore weigh 1a against going ICU-independent instead of bumping to 76:**
+DuckDB v2.0 "Cyanoptera" (this fall; v2.0-alpha already out) **removes the ICU
+library entirely** — the `icu` extension reimplements timezones/calendars/
+collations natively, with IANA tz data compressed to ~45 kB
+([highlights §9](https://duckdb.org/2026/08/17/duckdb-20-highlights), PRs
+#24463 / #24403). Verified against the blog; scope and impact:
+
+- **Scope is tz / calendar / collation only.** It does NOT touch DuckDB's
+  `lower`/`upper`/`nfc_normalize`, so the Trino-vs-DuckDB *case* divergences this
+  extension fixes are unchanged — the extension is still needed.
+- **Our runtime is NOT broken.** We statically link our *own* vendored ICU into
+  the `.duckdb_extension`, independent of DuckDB's libraries.
+- **The real DuckDB-2.0 walls for this plugin are elsewhere:**
+  1. **Source anchor gone.** Our snapshot was copied from DuckDB's
+     `extension/icu`; once upstream drops it we must vendor upstream ICU
+     ourselves and keep hauling ~20 MB (binary size, Wasm cost).
+  2. **Extension API/ABI rework** ([§10](https://duckdb.org/2026/08/17/duckdb-20-highlights),
+     PRs #24702 / #24135 / #24435). New versioned C API + a stable-ABI C++ API
+     (`duckdb_cpp.hpp`, `DUCKDB_CPP_EXTENSION_ENTRYPOINT`, builder-style
+     `ScalarFunction`). We use the *old* unstable C++ API
+     (`DUCKDB_CPP_EXTENSION_ENTRY`, `ScalarFunction(name,{args},ret,fn)`), so a
+     2.0 build needs at least a rebuild and likely migration to the new API.
+     Upside: on the stable ABI the extension no longer needs per-DuckDB-version
+     rebuilds ("write once, host yourself"), and org-hosted signed repositories
+     (PR #24777) become an option for distribution.
+- **Strategic signal — this validates option (B).** DuckDB just replaced a 20 MB
+  ICU with a ~45 kB native slice. We should do the same for the slice we need:
   - `lower`/`upper` — a **generated simple-case table** pinned to the target
-    Unicode/JDK. Tiny, JDK-exact (solves 1a's "prove ICU == JDK" outright), and
-    drops ICU for case mapping.
+    Unicode/JDK. Tiny, JDK-exact (solves 1a's "prove ICU == JDK" outright), drops
+    ICU for case mapping.
   - `trim` — a generated `White_Space` set. Trivial.
-  - `reverse` — needs no Unicode data (pure code-point reverse); already
-    ICU-free in spirit.
-  - `normalize` (NFC) — the hard dependency: needs canonical decomposition/
-    composition + combining classes. Options: keep only a slim normalizer, ship a
-    generated NFC table, or drop pushed `normalize`.
-  Decision to make: **(A)** bump vendored ICU → 76 for 0.5.0 as a short-lived
-  stopgap, or **(B)** replace ICU with generated tables for case/trim (cheap,
-  future-proof, JDK-exact) and settle NFC separately. Given DuckDB 2 is near,
-  (A)-then-(B) likely duplicates work; leaning toward (B) for case/trim now.
+  - `reverse` — no Unicode data needed (pure code-point reverse); already ICU-free.
+  - `normalize` (NFC) — the only hard dependency (canonical decomposition/
+    composition + combining classes). Options: a slim generated NFC table, or drop
+    pushed `normalize`.
+  Decision: **(A)** bump vendored ICU → 76 for 0.5.0 (fixes 1a now, but a
+  short-lived stopgap that still gets rebuilt/migrated for 2.0), or **(B)**
+  replace ICU with generated tables for case/trim now and settle NFC separately —
+  future-proof against 2.0 and JDK-exact. Given 2.0 is near and forces an API
+  migration anyway, **(B) for case/trim is the better investment**; pair it with
+  the 2.0 C++ API migration rather than doing (A) first.
+
+  **Release calendar (DuckDB) & our sequencing** — runway as of 2026-09:
+  - **2026-09-16 — DuckDB 1.5.6** (patch). Track it like 1.5.4→1.5.5: bump the
+    `duckdb` submodule + workflow `duckdb_version`, confirm CI green. Community
+    stable moves here, so 0.5.0 targets 1.5.6.
+  - **Second half of Oct 2026 — DuckDB 2.0.0** (ICU removed, new C/C++ extension
+    API, new parser/storage). ~6–7 weeks out — enough runway to do (B) properly.
+
+  Plan on this timeline:
+  1. Land 0.4.0 (PR #2614), then track 1.5.6 on release (submodule/workflow bump).
+  2. Ship EV-E3 as **0.5.0 via path (B)** on 1.5.x: generated JDK-exact case +
+     `White_Space` tables (drop ICU for `lower`/`upper`/`trim`), plus the
+     `trino_unicode_version()` gate and JDK-enumeration canaries. Decide NFC
+     (slim generated table vs. drop pushed `normalize`).
+  3. When 2.0.0 lands, do the C++ API/ABI migration — which is now ICU-free, so
+     it's an API port only, not an ICU-on-2.0 reconciliation.
+  Doing (A) first would mean porting a 20 MB ICU 76 snapshot onto 2.0's build
+  weeks later — wasted work. (B) collapses EV-E3 and 2.0-readiness into one line.
 
 ### 2. Add further native functions only on demonstrated divergence
 
