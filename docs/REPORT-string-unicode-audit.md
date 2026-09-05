@@ -24,6 +24,16 @@ the corpus and emitted a Markdown table; the raw output is in
 [Appendix A](#appendix-a--raw-probe-output). The curated takeaways below
 distinguish real engine divergences from probe-side rendering noise.
 
+**Baseline note (EV-E3):** These are historical observations from the ICU 66.1 /
+Unicode 13 extension baseline, not results for 0.5.0. The agreed upgrade is
+ICU 76.1 / Unicode 16.0, targeting Trino 483 on pinned JDK 25; exhaustive scalar
+oracle and NFC conformance checks passed locally in the
+[Unicode 16 validation report](REPORT-unicode16-validation.md). See the
+[compatibility profile](../README.md#unicode-compatibility-profile) and
+[vendor provenance directory](../third_party/icu/). Retain the original corpus
+and erratum below; neither establishes parity across all Trino/JDK versions
+or proves DuckDB 2.0 `lower`/`upper`/`nfc_normalize` behaviour unchanged.
+
 **Convention:**
 - ✅ aligned — DuckDB output matches Trino's documented behaviour on every probed input.
 - ⚠️ partial — aligned on most cases; a specific class of input diverges.
@@ -96,7 +106,8 @@ DuckDB's bare `trim(s)` strips:
 - ✅ U+200B ZWSP — NOT stripped (matches Trino)
 
 Trino's `trim` follows Java's whitespace definition (`Character.isWhitespace` / `String.strip`):
-- ✅ Strips: space, tab, LF, CR, FF, VT, EM SPACE, and other Unicode Z-category chars except NBSP/ZWSP.
+- ✅ Strips: space, tab, LF, CR, FF, VT, U+001C-U+001F, and Unicode Zs/Zl/Zp separators except NBSP (U+00A0), FIGURE SPACE (U+2007) and NARROW NBSP (U+202F). ZWSP (U+200B) is not stripped.
+- This is **not** Unicode `White_Space`: that property includes NBSP/U+2007/U+202F and U+0085, but excludes U+001C-U+001F.
 
 **Impact:** A row with `name = '\thello\t'` and predicate `WHERE trim(name) = 'hello'`:
 - Trino: `trim('\thello\t')` → `'hello'` → match.
@@ -127,7 +138,7 @@ where ICU's `u_isWhitespace` is true, matching Java's `Character.isWhitespace`
 - ~~`lower('İ')` (U+0130): DuckDB → `'i'`; Trino → `'i'` + U+0307.~~ Both `'i'`.
 - `upper('ß')` (U+00DF): DuckDB → `'ẞ'` (U+1E9E, 1 code point); Trino → `'ß'` (unchanged). ~~`'SS'`~~
 
-**Resolution (current):** `trino_lower` / `trino_upper` apply ICU `u_tolower` /
+**Resolution (2026-09-02):** `trino_lower` / `trino_upper` apply ICU `u_tolower` /
 `u_toupper` per code point (simple mapping), matching Trino byte-for-byte on the
 corpus in `test/sql/trino_parity.test`.
 

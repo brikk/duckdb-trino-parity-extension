@@ -1,6 +1,6 @@
 // © 2016 and later: Unicode, Inc. and others.
 // License & terms of use: http://www.unicode.org/copyright.html
-/*
+/*  
 **********************************************************************
 *   Copyright (C) 2002-2016, International Business Machines
 *   Corporation and others.  All Rights Reserved.
@@ -17,41 +17,6 @@
 #ifndef __UCONFIG_H__
 #define __UCONFIG_H__
 
-#ifndef U_COMMON_IMPLEMENTATION
-#define U_COMMON_IMPLEMENTATION
-#endif
-
-#ifndef U_STATIC_IMPLEMENTATION
-#define U_STATIC_IMPLEMENTATION
-#endif
-
-#ifndef UCONFIG_NO_BREAK_ITERATION
-#define UCONFIG_NO_BREAK_ITERATION 1
-#endif
-
-#ifndef UCONFIG_NO_IDNA
-#define UCONFIG_NO_IDNA 1
-#endif
-
-#ifndef UCONFIG_NO_CONVERSION
-#define UCONFIG_NO_CONVERSION 1
-#endif
-
-#ifndef UCONFIG_NO_TRANSLITERATION
-#define UCONFIG_NO_TRANSLITERATION 1
-#endif
-
-#ifndef UCONFIG_NO_REGULAR_EXPRESSIONS
-#define UCONFIG_NO_REGULAR_EXPRESSIONS 1
-#endif
-
-#ifndef UCONFIG_NO_SERVICE
-#define UCONFIG_NO_SERVICE 1
-#endif
-
-#ifndef U_SHOW_CPLUSPLUS_API
-#define U_SHOW_CPLUSPLUS_API 1
-#endif
 
 /*!
  * \file
@@ -86,9 +51,9 @@
  *
  * @internal ICU 4.0
  */
-// #if defined(UCONFIG_USE_LOCAL)
-// #include "uconfig_local.h"
-// #endif
+#if defined(UCONFIG_USE_LOCAL)
+#include "uconfig_local.h"
+#endif
 
 /**
  * \def U_DEBUG
@@ -111,7 +76,7 @@
 #endif
 
 /**
- * Determines whether to enable auto cleanup of libraries.
+ * Determines whether to enable auto cleanup of libraries. 
  * @internal
  */
 #ifndef UCLN_NO_AUTO_CLEANUP
@@ -125,6 +90,24 @@
  */
 #ifndef U_DISABLE_RENAMING
 #define U_DISABLE_RENAMING 0
+#endif
+
+/**
+ * \def U_NO_DEFAULT_INCLUDE_UTF_HEADERS
+ * Determines whether utypes.h includes utf.h, utf8.h, utf16.h and utf_old.h.
+ * utypes.h includes those headers if this macro is defined to 0.
+ * Otherwise, each those headers must be included explicitly when using one of their macros.
+ * Defaults to 0 for backward compatibility, except inside ICU.
+ * @stable ICU 49
+ */
+#ifdef U_NO_DEFAULT_INCLUDE_UTF_HEADERS
+    /* Use the predefined value. */
+#elif defined(U_COMBINED_IMPLEMENTATION) || defined(U_COMMON_IMPLEMENTATION) || defined(U_I18N_IMPLEMENTATION) || \
+      defined(U_IO_IMPLEMENTATION) || defined(U_LAYOUT_IMPLEMENTATION) || defined(U_LAYOUTEX_IMPLEMENTATION) || \
+      defined(U_TOOLUTIL_IMPLEMENTATION)
+#   define U_NO_DEFAULT_INCLUDE_UTF_HEADERS 1
+#else
+#   define U_NO_DEFAULT_INCLUDE_UTF_HEADERS 0
 #endif
 
 /**
@@ -273,7 +256,7 @@
 #   define UCONFIG_NO_FILE_IO 0
 #endif
 
-#if UCONFIG_NO_FILE_IO && defined(U_TIMEZONE_FILES_DIR)
+#if UCONFIG_NO_FILE_IO && defined(U_TIMEZONE_FILES_DIR) 
 #   error Contradictory file io switches in uconfig.h.
 #endif
 
@@ -340,6 +323,16 @@
 #   define UCONFIG_NO_NORMALIZATION 0
 #endif
 
+/**
+ * \def UCONFIG_USE_ML_PHRASE_BREAKING
+ * This switch turns on BudouX ML phrase-based line breaking, rather than using the dictionary.
+ *
+ * @internal
+ */
+#ifndef UCONFIG_USE_ML_PHRASE_BREAKING
+#   define UCONFIG_USE_ML_PHRASE_BREAKING 0
+#endif
+
 #if UCONFIG_NO_NORMALIZATION
     /* common library */
     /* ICU 50 CJK dictionary BreakIterator uses normalization */
@@ -391,7 +384,7 @@
  * On platforms where U_PLATFORM_HAS_WIN32_API is true, this switch determines
  * if the Windows platform APIs are used for LCID<->Locale Name conversions.
  * Otherwise, only the built-in ICU tables are used.
- *
+ * 
  * @internal ICU 64
  */
 #ifndef UCONFIG_USE_WINDOWS_LCID_MAPPING_API
@@ -418,6 +411,17 @@
  */
 #ifndef UCONFIG_NO_FORMATTING
 #   define UCONFIG_NO_FORMATTING 0
+#endif
+
+/**
+ * \def UCONFIG_NO_MF2
+ * This switch turns off the experimental MessageFormat 2.0 API.
+ *
+ * @internal ICU 75 technology preview
+ * @deprecated This API is for technology preview only.
+ */
+#ifndef UCONFIG_NO_MF2
+#   define UCONFIG_NO_MF2 0
 #endif
 
 /**

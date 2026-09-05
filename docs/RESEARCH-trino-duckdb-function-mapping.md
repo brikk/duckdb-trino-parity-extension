@@ -18,6 +18,15 @@ what (if anything) `trino_parity` provides for that operation.
 
 **Status:** Canonical reference, not exhaustive. Updated as new candidates are added.
 **Sources:** Trino 481 docs (`functions/`); DuckDB LTS docs (`sql/functions/`).
+**EV-E3 baseline:** 0.5.0 targets ICU 76.1 / Unicode 16.0 and Trino 483 on pinned
+JDK 25; local validation is recorded in
+[the Unicode 16 report](REPORT-unicode16-validation.md), not established by the
+historical sources above. Unicode-sensitive native rows require a validated deployment profile
+or a proven safe input restriction; otherwise the caller must disable their
+pushdown. A minimum Unicode version is not a safety guarantee. See the
+[compatibility profile](../README.md#unicode-compatibility-profile) and
+[vendor provenance directory](../third_party/icu/).
+
 **Companion doc:** [RESEARCH-duckdb-extension-coverage.md](RESEARCH-duckdb-extension-coverage.md) — DuckDB community / core extensions (`crypto`, `hashfuncs`, `datasketches`, `netquack`, `splink_udfs`, core `inet`, …) that fill many "Trino-only" gaps below.
 
 **Convention:** Each row is one logical operation. The "Trino" and "DuckDB"
@@ -86,7 +95,7 @@ rewrite directly; and leave `—` rows evaluated above the scan.
 | ASCII code of first char | `codepoint(string) -> integer` | `ascii(string)`, `unicode(string)`, `ord(string)` | — | ⚠️ Trino `codepoint` requires single-char varchar(1); DuckDB `unicode` takes any varchar and uses first char. NOT 1:1. |
 | Char from code | `chr(n) -> varchar` | `chr(code_point)` | caller | ✅ Aligned for valid code points. |
 | Translate chars | `translate(source, from, to) -> varchar` | `translate(string, from, to)` | caller | ✅ Same algorithm: char-by-char replacement, extra `from` chars deleted. |
-| Unicode normalize | `normalize(string[, form])` | `nfc_normalize(string)` | native (`trino_normalize/1`, ICU NFC) | ⚠️ The vendored ICU ships only NFC static data, so only the NFC form is registered; the 2-arg selector (NFD/NFKC/NFKD) is out of scope. Safe when both sides agree on form = NFC. See [REPORT-string-unicode-audit.md](REPORT-string-unicode-audit.md). |
+| Unicode normalize | `normalize(string[, form])` | `nfc_normalize(string)` | native (`trino_normalize/1`, ICU NFC) | ⚠️ Only NFC is exposed by the public API; the 2-arg selector and NFD/NFKC/NFKD are out of scope. NFC data can also serve NFD without separate NFD data. Agreement on form = NFC alone does not prove parity; the compatibility profile must also be validated or inputs proven safe. See [REPORT-string-unicode-audit.md](REPORT-string-unicode-audit.md). |
 | Soundex | `soundex(char) -> string` | `soundex(s)` (splink_udfs); also `double_metaphone(s)` for a stronger encoder | — | ✅ Available when `splink_udfs` is loaded. See [RESEARCH-duckdb-extension-coverage.md](RESEARCH-duckdb-extension-coverage.md). |
 | Word stem | `word_stem(word[, lang]) -> varchar` | — | — | ❌ Trino-only. |
 | Luhn check | `luhn_check(string) -> boolean` | — | — | ❌ Trino-only. |

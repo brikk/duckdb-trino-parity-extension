@@ -1,0 +1,113 @@
+# name: test/sql/trino_unicode16.test
+# description: Unicode 14/16 canaries for ICU 76.1, independent of vendored ICU data.
+# group: [sql]
+
+# Case expectations: Unicode 16.0.0 UnicodeData.txt simple mappings (zero-based fields 12/13),
+# ages: DerivedAge.txt. NFC: NormalizationTest-16.0.0.txt c3 -> c2.
+# External cross-check: scripts/check_unicode.py, actual OpenJDK 25 Character/Normalizer.
+# Sources: https://www.unicode.org/Public/16.0.0/ucd/{UnicodeData,DerivedAge,NormalizationTest}.txt
+# UnicodeData SHA-256: ff58e5823bd095166564a006e47d111130813dcf8bf234ef79fa51a870edb48f
+# DerivedAge SHA-256: 60caa81b99a4dfb0bc5d38440d323073e3f356f46f9ca7869da848cd0715408b
+# NormalizationTest SHA-256 is pinned in scripts/check_unicode.py.
+
+require trino_parity
+
+# Unicode 14: Glagolitic caudate chrivi U+2C2F <-> U+2C5F.
+query I
+SELECT trino_lower(chr(11311)) = chr(11359) AND trino_upper(chr(11359)) = chr(11311);
+----
+true
+
+# Unicode 14: all 35 Vithkuqi pairs U+10570..10595 -> U+10597..105BC.
+# Holes U+1057B/1058B/10593 have no letters; do not apply a blanket range offset.
+query I
+SELECT count(*) = 35 AND bool_and(trino_lower(chr(cp::INTEGER)) = chr((cp + 39)::INTEGER) AND trino_upper(chr((cp + 39)::INTEGER)) = chr(cp::INTEGER))
+FROM range(66928, 66966) AS t(cp) WHERE cp NOT IN (66939, 66955, 66963);
+----
+true
+
+query I
+SELECT bool_and(trino_lower(chr(cp)) = chr(cp) AND trino_upper(chr(cp)) = chr(cp))
+FROM (VALUES (66939), (66955), (66963), (66978), (66994), (67002)) AS t(cp);
+----
+true
+
+# Unicode 16: Cyrillic TJE; Latin rams horn, diagonal-stroke S, lambda,
+# lambda with stroke. The last and rams horn pair newly added capitals with OLD lowercase letters.
+query I
+SELECT bool_and(trino_lower(chr(cap)) = chr(small) AND trino_upper(chr(small)) = chr(cap))
+FROM (VALUES (7305, 7306), (42955, 612), (42956, 42957), (42970, 42971), (42972, 411)) AS t(cap, small);
+----
+true
+
+# Mixed sequence: simple context-free mapping, not full case conversion/folding.
+# Beta/symbol beta, sharp s, dotted I, final sigma and word-final capital sigma.
+query I
+SELECT trino_lower(chr(914) || chr(976) || chr(223) || chr(304) || chr(962) || 'A' || chr(931)) = chr(946) || chr(976) || chr(223) || 'i' || chr(962) || 'a' || chr(963)
+AND trino_upper(chr(946) || chr(976) || chr(223) || chr(304) || chr(962)) = chr(914) || chr(914) || chr(223) || chr(304) || chr(931);
+----
+true
+
+# Java Character.isWhitespace is NOT Unicode White_Space: NEL, NBSP,
+# FIGURE SPACE and NARROW NBSP are excluded, including at either end.
+query I
+SELECT bool_and(trino_trim(s) = s AND trino_ltrim(s) = s AND trino_rtrim(s) = s
+AND trino_trim(' ' || s || ' ') = s AND trino_ltrim(' ' || s) = s AND trino_rtrim(s || ' ') = s)
+FROM (SELECT chr(cp) || 'x' || chr(cp) AS s FROM (VALUES (133), (160), (8199), (8239)) AS t(cp));
+----
+true
+
+# U+001C..001F ARE Java whitespace, although not Unicode White_Space.
+query I
+SELECT bool_and(trino_trim(s || 'x' || s) = 'x' AND trino_ltrim(s || 'x' || s) = 'x' || s
+AND trino_rtrim(s || 'x' || s) = s || 'x' AND trino_trim(s) = '' AND trino_ltrim(s) = '' AND trino_rtrim(s) = '')
+FROM (SELECT chr(cp::INTEGER) AS s FROM range(28, 32) AS t(cp));
+----
+true
+
+# Unicode 16 new canonical compositions. Todhri U+105D2 + 0307 -> 105C9;
+# Tulu-Tigalari 11382 + 113C9 -> 11383; Gurung Khema 1611E + 1611E + 1611F -> 16126;
+# Kirat Rai 16D63 + 16D67 + 16D67 -> 16D6A (recursive, three-codepoint composition).
+# NormalizationTest.txt lines 15153, 15218, 15236, 15241, respectively.
+query I
+SELECT bool_and(trino_normalize(decomposed) = composed AND trino_normalize(composed) = composed
+AND trino_normalize('x' || decomposed || 'y') = 'x' || composed || 'y')
+FROM (VALUES (chr(67026) || chr(775), chr(67017)),
+(chr(70530) || chr(70601), chr(70531)),
+(chr(90398) || chr(90398) || chr(90399), chr(90406)),
+(chr(93539) || chr(93543) || chr(93543), chr(93546))) AS t(decomposed, composed);
+----
+true
+
+# Unicode 16 Tulu-Tigalari virama U+113CE has CCC=9: reorder before U+0300 (CCC=230).
+query I
+SELECT trino_normalize(chr(768) || chr(70606)) = chr(70606) || chr(768);
+----
+true
+
+# Composition exclusion, canonical reordering, equal-CCC blocking, Hangul L/V/T,
+# and compatibility characters unchanged by NFC (must not silently become NFKC).
+query I
+SELECT trino_normalize(chr(836)) = chr(776) || chr(769)
+AND trino_normalize('D' || chr(775) || chr(803)) = chr(7692) || chr(775)
+AND trino_normalize('A' || chr(773) || chr(778)) = 'A' || chr(773) || chr(778)
+AND trino_normalize(chr(4352) || chr(4449) || chr(4520)) = chr(44033)
+AND trino_normalize(chr(64257) || chr(9312)) = chr(64257) || chr(9312);
+----
+true
+
+# Embedded NUL, noncharacters, supplementary scalars, and UTF-8 width changes.
+query I
+SELECT trino_lower(chr(304) || chr(0) || chr(66560) || chr(1114111)) = 'i' || chr(0) || chr(66600) || chr(1114111)
+AND trino_trim(chr(0) || 'x' || chr(0)) = chr(0) || 'x' || chr(0)
+AND trino_normalize('A' || chr(0) || chr(778)) = 'A' || chr(0) || chr(778);
+----
+true
+
+query I
+SELECT trino_lower('') = '' AND trino_upper('') = '' AND trino_normalize('') = ''
+AND trino_trim('') = '' AND trino_ltrim('') = '' AND trino_rtrim('') = ''
+AND trino_lower(NULL) IS NULL AND trino_upper(NULL) IS NULL AND trino_normalize(NULL) IS NULL
+AND trino_trim(NULL) IS NULL AND trino_ltrim(NULL) IS NULL AND trino_rtrim(NULL) IS NULL;
+----
+true

@@ -1,21 +1,15 @@
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 3.8)
 
 set(TARGET_NAME trino_parity)
 
-# Vendored ICU sources from duckdb/extension/icu/third_party/icu/. We bundle
-# the same minimal-ICU snapshot DuckDB ships in its own bundled `icu`
-# extension: `common` + `i18n` + a stub data module. This avoids the vcpkg
-# dependency entirely (and the build-environment fragility that comes with
-# autotools-based ICU compiling under manylinux + gcc-toolset-14 in CI).
-#
-# Trade-off: stub data means only NFC normalization data is baked in (via
-# norm2_nfc_data.h); NFD/NFKC/NFKD are NOT available. `trino_normalize/2`
-# is intentionally NOT registered as a result — Trino still evaluates the
-# non-NFC forms above-the-scan, just not pushed to DuckDB. trino_lower /
-# trino_upper / trino_reverse / trim family / trino_normalize/1 (NFC)
-# all work fine with the vendored ICU.
-include_directories(third_party/icu/common)
-include_directories(third_party/icu/i18n)
+# Pinned ICU 76.1 / Unicode 16.0 sources and embedded property/case/NFC data.
+# No system ICU, external data files, or build/load-time downloads are needed.
+# NFC and NFD share norm2_nfc_data.h; the SQL API intentionally exposes only
+# trino_normalize/1 (NFC). NFKC/NFKD data is not bundled. See third_party/icu/README.md.
+# Use the same local configuration for ICU and its consumers, and prefer these
+# headers over any ICU headers inherited from DuckDB or the build environment.
+add_definitions(-DUCONFIG_USE_LOCAL=1)
+include_directories(BEFORE third_party/icu third_party/icu/common third_party/icu/i18n)
 # Vendored single-file hash primitives backing the native trino_xxhash64 /
 # trino_sha512 / trino_hmac_sha256 scalar functions (see
 # third_party/hash/THIRD_PARTY_NOTICES.md): xxHash (BSD-2, header-only) and
@@ -29,16 +23,14 @@ set(LOADABLE_EXTENSION_NAME ${TARGET_NAME}_loadable_extension)
 
 project(${TARGET_NAME})
 
-set(CMAKE_CXX_STANDARD "17" CACHE STRING "C++ standard to enforce")
+# Override DuckDB's cached C++11 default in this directory only. ICU 76 public
+# headers require C++17 in the extension consumers as well as the ICU objects.
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include_directories(src/include)
 
-# The trino_<name> macros and the trino_meta() table macro are defined as
-# native DefaultMacro / DefaultTableMacro arrays in src/macro_definitions.cpp,
-# registered via DefaultFunctionGenerator::CreateInternalMacroInfo at extension
-# LOAD time. No SQL parse loop, no embedded resource file — same pattern as
-# DuckDB's bundled `json` extension and Query-farm/clickhouse-sql.
+# Only trino_meta() is a table macro; all ten scalar functions are native.
 set(EXTENSION_SOURCES
     src/trino_parity_extension.cpp
     src/string_functions.cpp

@@ -23,3 +23,6 @@ ccache = "4.10"
 [env]
 # Match the generator the Makefile expects without having to export it by hand.
 GEN = "ninja"
+# DuckDB compilation is memory-intensive. Keep local builds conservative;
+# explicitly opt into more jobs only with sufficient free RAM (at most 8 here).
+CMAKE_BUILD_PARALLEL_LEVEL = "2"

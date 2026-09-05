@@ -30,8 +30,9 @@ namespace {
 //   lower('ΟΔΥΣΣΕΥΣ') = 'οδυσσευσ' (no final-sigma rule; every Σ -> σ)
 //   upper('ﬁ')       = 'ﬁ'   (U+FB01 ligature has no simple uppercase)
 //   upper('ᾀ')       = 'ᾈ'   (U+1F80 -> U+1F88, a 1:1 mapping, NOT 'ἈΙ')
-// ICU's per-code-point u_tolower / u_toupper read the same simple-mapping field,
-// so a U8_NEXT loop over them reproduces Trino byte-for-byte. Full string case
+// ICU 76.1's per-code-point mappings are checked exhaustively against pinned
+// JDK 25 by scripts/check_unicode.py; Unicode-version equality alone is not
+// a parity guarantee. Full string case
 // mapping (UnicodeString::toLower/toUpper, u_strToLower/u_strToUpper) applies
 // SpecialCasing.txt 1:N and contextual rules and diverges on every line above.
 //
@@ -205,10 +206,9 @@ void TrinoRtrimFun(DataChunk &args, ExpressionState &state, Vector &result) {
 }
 
 // Trino's normalize(string[, form]) where form ∈ {NFC, NFD, NFKC, NFKD}.
-// The vendored ICU only bakes in NFC data (norm2_nfc_data.h); NFD / NFKC /
-// NFKD would need additional data tables we haven't shipped. We register
-// only the 1-arg form (NFC by default); the 2-arg form stays unpushable in
-// the connector's translator and Trino evaluates it above-the-scan.
+// The vendored canonical normalization data serves both NFC and NFD, but our
+// public API deliberately exposes only the 1-arg NFC form. NFKC/NFKD require
+// compatibility data that is not bundled; no form-selector overload is exposed.
 
 inline std::string NormalizeWith(const icu::Normalizer2 &norm, const char *data, idx_t size) {
 	icu::UnicodeString in = icu::UnicodeString::fromUTF8(icu::StringPiece(data, size));
