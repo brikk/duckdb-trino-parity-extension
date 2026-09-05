@@ -115,8 +115,10 @@ void TrinoHmacSha256Fun(DataChunk &args, ExpressionState &state, Vector &result)
 void RegisterHashFunctions(ExtensionLoader &loader) {
 	loader.RegisterFunction(ScalarFunction("trino_xxhash64", {LogicalType::BLOB}, LogicalType::BLOB, TrinoXxhash64Fun));
 	loader.RegisterFunction(ScalarFunction("trino_sha512", {LogicalType::BLOB}, LogicalType::BLOB, TrinoSha512Fun));
-	loader.RegisterFunction(ScalarFunction("trino_hmac_sha256", {LogicalType::BLOB, LogicalType::BLOB},
-	                                       LogicalType::BLOB, TrinoHmacSha256Fun));
+	ScalarFunction hmac_sha256("trino_hmac_sha256", {LogicalType::BLOB, LogicalType::BLOB}, LogicalType::BLOB,
+	                           TrinoHmacSha256Fun);
+	hmac_sha256.SetFallible();
+	loader.RegisterFunction(hmac_sha256);
 }
 
 } // namespace duckdb
