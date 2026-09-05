@@ -28,6 +28,8 @@ renames, commented-out declarations, and source edits are no longer needed.
 `uconfig_local.h` is loaded through upstream's `UCONFIG_USE_LOCAL` hook for both
 ICU and extension consumers. It preserves the previous exclusions for conversion,
 break iteration, IDNA, transliteration, regular expressions, and services.
+Formatting and calendar/timezone services are also disabled: none is used by
+our SQL functions, and ICU's date formatter assumes conversion support on Windows.
 Implementation macros are now scoped to their own common/i18n targets rather
 than defining `U_COMMON_IMPLEMENTATION` in every consumer.
 

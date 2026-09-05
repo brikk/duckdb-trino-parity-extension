@@ -18,6 +18,8 @@
 #define UCONFIG_NO_TRANSLITERATION 1
 #define UCONFIG_NO_REGULAR_EXPRESSIONS 1
 #define UCONFIG_NO_SERVICE 1
+// Date/number formatting is unused and assumes conversion support on Windows.
+#define UCONFIG_NO_FORMATTING 1
 
 // Only compiled-in data is used. No ICU_DATA lookup or dynamic plugin loading.
 #define UCONFIG_NO_FILE_IO 1
