@@ -70,6 +70,48 @@ Unicode 14–16 diverge: `trino_lower(U+2C2F)` (Glagolitic, 14.0) stays U+2C2F
 where Trino gives U+2C5F. Bump to an ICU release carrying Unicode 16 data and
 pin a canary for U+2C2F in `test/sql/trino_parity.test`.
 
+Two extra requirements beyond a plain data bump:
+- **Match the *deployment's* JDK, not "latest."** The parity target is whatever
+  Unicode version the connected Trino's JDK uses (JDK 24/25 = 16, JDK 23 = 15.1).
+  Pinning Unicode 16 is right for current Trino but will skew again as the JDK
+  advances — and in the *other* direction for older-JDK workers. Surface the
+  extension's Unicode version (e.g. a `trino_unicode_version()` scalar or a
+  `trino_meta()` row) so the connector can gate PARITY pushdown on the min of the
+  two versions. That gate — not the data bump — is what actually guarantees
+  losslessness between releases.
+- **Prove ICU == JDK, don't assume it.** The algorithm relies on ICU's
+  `u_tolower`/`u_toupper` reproducing `Character.toLowerCase/toUpperCase(int)`.
+  Generate the canary corpus by enumerating all code points through the *actual*
+  target JDK and diffing against the extension; carry a tiny override table for
+  any code point where ICU disagrees with the JDK. **See 1b — this may be moot.**
+
+### 1b. DuckDB 2 will remove ICU — plan the ICU exit (gates 1a)
+
+DuckDB 2 (due "soon", per DuckDB 2 prep notes) drops ICU from its libraries in
+favour of internal Unicode implementations. Impact on this plugin:
+- **Runtime is NOT broken.** We statically link our *own* vendored ICU into the
+  `.duckdb_extension`, independent of DuckDB's libraries — so removing DuckDB's
+  ICU doesn't break our Unicode at load time.
+- **But the source anchor and the strategy change.** Our snapshot was copied from
+  DuckDB's `extension/icu`; once DuckDB drops it we must track upstream ICU
+  ourselves, reconcile the DuckDB 2 build/extension-template, and keep carrying a
+  ~20 MB vendored ICU (binary size, Wasm cost) that the rest of the ecosystem is
+  deprecating.
+- **Therefore weigh 1a against going ICU-independent instead of bumping to 76:**
+  - `lower`/`upper` — a **generated simple-case table** pinned to the target
+    Unicode/JDK. Tiny, JDK-exact (solves 1a's "prove ICU == JDK" outright), and
+    drops ICU for case mapping.
+  - `trim` — a generated `White_Space` set. Trivial.
+  - `reverse` — needs no Unicode data (pure code-point reverse); already
+    ICU-free in spirit.
+  - `normalize` (NFC) — the hard dependency: needs canonical decomposition/
+    composition + combining classes. Options: keep only a slim normalizer, ship a
+    generated NFC table, or drop pushed `normalize`.
+  Decision to make: **(A)** bump vendored ICU → 76 for 0.5.0 as a short-lived
+  stopgap, or **(B)** replace ICU with generated tables for case/trim (cheap,
+  future-proof, JDK-exact) and settle NFC separately. Given DuckDB 2 is near,
+  (A)-then-(B) likely duplicates work; leaning toward (B) for case/trim now.
+
 ### 2. Add further native functions only on demonstrated divergence
 
 The bar for shipping a new `trino_*` function is "DuckDB's built-in genuinely
