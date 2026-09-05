@@ -22,6 +22,9 @@ here (see [`docs/RESEARCH-trino-duckdb-function-mapping.md`](docs/RESEARCH-trino
 - ✅ Native `trino_xxhash64` / `trino_sha512` / `trino_hmac_sha256` over
   vendored single-file primitives (xxHash + WjCryptLib SHA) — no dependency on
   the `crypto` / `hashfuncs` community extensions.
+- ✅ `trino_hmac_sha256` rejects a zero-byte key with `Empty key`, matching Trino
+  (0.4.0 / EV-E2); empty data, binary-NUL keys, NULL propagation and >64-byte
+  key hashing are sqllogic-pinned.
 - ✅ `trino_meta()` table macro — catalog of the ten native functions the
   extension provides; a caller probes it at startup.
 - ✅ **Passthrough shrink**: removed the ~85 macros that merely renamed /

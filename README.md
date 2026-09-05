@@ -89,7 +89,9 @@ The hash functions are self-contained over vendored single-file primitives
   `xxhash64(varbinary) -> varbinary`.
 - `trino_sha512`: SHA-512 over raw bytes → `VARBINARY`.
 - `trino_hmac_sha256`: HMAC-SHA256 over raw `VARBINARY` key + message (DuckDB's
-  `crypto_hmac` is VARCHAR-only and can't take arbitrary binary keys).
+  `crypto_hmac` is VARCHAR-only and can't take arbitrary binary keys). Empty data is valid;
+  an empty key throws `Empty key`, matching Trino's `SecretKeySpec` contract (RFC 2104 itself
+  permits empty keys, so this check is deliberate API parity).
 
 All ten functions are timezone- and locale-invariant, so loading this extension
 has no session-state prerequisites.

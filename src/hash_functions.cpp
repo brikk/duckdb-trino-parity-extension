@@ -94,10 +94,15 @@ void ComputeHmacSha256(const uint8_t *key, size_t key_len, const uint8_t *msg, s
 // hmac_sha256: Trino's hmac_sha256(data, key) — data first, key second, both
 // VARBINARY. Computed over raw bytes (NOT routed through any VARCHAR cast), so
 // arbitrary binary keys/messages hash correctly — the reason the macro path
-// over crypto_hmac (VARCHAR-only) was not pushable.
+// over crypto_hmac (VARCHAR-only) was not pushable. Trino rejects a zero-byte
+// key with "Empty key" (javax.crypto.spec.SecretKeySpec); RFC 2104 itself permits
+// one, so enforce Trino's API contract explicitly before computing.
 void TrinoHmacSha256Fun(DataChunk &args, ExpressionState &state, Vector &result) {
 	BinaryExecutor::Execute<string_t, string_t, string_t>(
 	    args.data[0], args.data[1], result, args.size(), [&](string_t data, string_t key) {
+		    if (key.GetSize() == 0) {
+			    throw InvalidInputException("Empty key");
+		    }
 		    uint8_t out[SHA256_HASH_SIZE];
 		    ComputeHmacSha256(reinterpret_cast<const uint8_t *>(key.GetData()), key.GetSize(),
 		                      reinterpret_cast<const uint8_t *>(data.GetData()), data.GetSize(), out);

@@ -388,6 +388,29 @@ SELECT hex(trino_hmac_sha256('The quick brown fox jumps over the lazy dog'::BLOB
 ----
 F7BC83F430538424B13298E6AA6FB143EF4D59A14946175997479DBC2D1A3CD8
 
+# Empty DATA is valid; empty KEY is not (Trino's SecretKeySpec contract).
+query I
+SELECT hex(trino_hmac_sha256(''::BLOB, 'key'::BLOB));
+----
+5D5D139563C95B5967B9BD9A8C9B233A9DEDB45072794CD232DC1B74832607D0
+
+statement error
+SELECT trino_hmac_sha256('data'::BLOB, ''::BLOB);
+----
+Empty key
+
+# Raw binary key including NUL (not VARCHAR semantics).
+query I
+SELECT hex(trino_hmac_sha256(unhex('00FF'), unhex('006B')));
+----
+CEA6BBB7CD52DEA3B9F8A4395D325EC60F11CC2FB4860C8FBCE614B091DCDDBB
+
+# Key > SHA-256's 64-byte block exercises the hash-the-key path.
+query I
+SELECT hex(trino_hmac_sha256('abc'::BLOB, repeat('A', 65)::BLOB));
+----
+77D5A4912F0BDDB40C3F2CE11809E7DAF3F0EB454A31F102C72FAAE43C3062F8
+
 # NULL propagation on the native hashes.
 query I
 SELECT trino_sha512(NULL);
@@ -396,6 +419,11 @@ NULL
 
 query I
 SELECT trino_hmac_sha256(NULL, 'key'::BLOB);
+----
+NULL
+
+query I
+SELECT trino_hmac_sha256('data'::BLOB, NULL);
 ----
 NULL
 
